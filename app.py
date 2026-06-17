@@ -19,7 +19,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-import plotly.io as pio
 
 # PDF generation
 from reportlab.lib.pagesizes import A4
@@ -572,13 +571,115 @@ else:
 st.markdown("---")
 st.markdown("### 📄 Export Report")
 
-def build_pdf(fig1, fig2, scenarios, meta):
+def render_chart_matplotlib(chart_data):
     """
-    Generate a PDF report containing:
-      - Title and run parameters
-      - Both Plotly charts as embedded images
-      - Results summary table
-      - Scenarios comparison table (if any)
+    Draws a chart using pure matplotlib — no Chrome, no kaleido needed.
+    chart_data keys:
+        title, xlabel, ylabel,
+        boundary      : array of (t_arr, rm_arr) or None
+        pass_fill     : bool — shade green/red zones
+        selected_dot  : (x, y, label) or None
+        pin_marker    : (x, y, label) or None
+        scatter_pass  : list of (x, y) or None
+        scatter_fail  : list of (x, y) or None
+        sufficient_msg: str or None
+    Returns PNG bytes.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+
+    GRADES      = [590, 780, 980, 1180]
+    Y_MIN, Y_MAX = 350, 1450
+    T_MIN, T_MAX = 0.75, 2.55
+    NAV   = "#1b3a6b"
+    ORANGE= "#e05c1a"
+
+    fig_mpl, ax = plt.subplots(figsize=(7, 4.8), dpi=150)
+    ax.set_facecolor("#f8fafd")
+    fig_mpl.patch.set_facecolor("white")
+
+    # Grade reference lines
+    for g in GRADES:
+        ax.axhline(g, color="#8096c8", lw=0.9, ls="--", alpha=0.7)
+        ax.text(T_MAX + 0.01, g, f"{g} MPa", va="center", ha="left",
+                fontsize=7, color="#5a6a9a")
+
+    if chart_data.get("sufficient_msg"):
+        ax.text(1.65, 900, chart_data["sufficient_msg"],
+                ha="center", va="center", fontsize=12, color="#1a7a3c",
+                bbox=dict(boxstyle="round,pad=0.5", fc="#dcffe4", ec="#5abf7e", lw=1.2))
+    else:
+        bnd = chart_data.get("boundary")
+        if bnd is not None:
+            t_arr, rm_arr = bnd
+            if chart_data.get("pass_fill"):
+                ax.fill_between(t_arr, rm_arr, Y_MAX,
+                                color="#22a846", alpha=0.10, zorder=1)
+                ax.fill_between(t_arr, Y_MIN, rm_arr,
+                                color="#c83228", alpha=0.08, zorder=1)
+            ax.plot(t_arr, rm_arr, color=ORANGE, lw=2.2, zorder=3, label="Min boundary")
+
+        # Scatter overlay
+        sp = chart_data.get("scatter_pass")
+        sf = chart_data.get("scatter_fail")
+        if sp:
+            xs, ys = zip(*sp)
+            ax.scatter(xs, ys, c="rgba(22,160,80,0.75)" if False else "#16a050",
+                       s=28, alpha=0.75, zorder=4, label="PASS combo",
+                       edgecolors="#16a050", linewidths=0.5)
+        if sf:
+            xs, ys = zip(*sf)
+            ax.scatter(xs, ys, c="#d23228",
+                       s=28, alpha=0.65, zorder=4, label="FAIL combo",
+                       edgecolors="#d23228", linewidths=0.5)
+
+        # Selected dot
+        dot = chart_data.get("selected_dot")
+        if dot:
+            x, y, lbl = dot
+            ax.scatter([x], [y], c="#0d8c4e", s=120, zorder=6,
+                       edgecolors=NAV, linewidths=1.8, label=lbl)
+
+        # Pin marker
+        pin = chart_data.get("pin_marker")
+        if pin:
+            x, y, lbl = pin
+            ok  = 0.8 <= x <= 2.5
+            mc  = "#0d8c4e" if ok else "#c0392b"
+            ax.scatter([x], [y], c=mc, s=120, marker="D", zorder=6,
+                       edgecolors=NAV, linewidths=1.8, label=lbl)
+            ax.annotate(f"t_min={x:.2f}mm", (x, y),
+                        xytext=(8, 4), textcoords="offset points",
+                        fontsize=7, color=mc)
+
+    ax.set_xlim(T_MIN, T_MAX + 0.15)
+    ax.set_ylim(Y_MIN, Y_MAX)
+    ax.set_xlabel(chart_data["xlabel"], fontsize=9, color="#3a4a6a")
+    ax.set_ylabel(chart_data["ylabel"], fontsize=9, color="#3a4a6a")
+    ax.set_title(chart_data["title"], fontsize=10, color=NAV, fontweight="bold", pad=8)
+    ax.tick_params(labelsize=8, colors="#3a4a6a")
+    ax.grid(True, color="#dde4f0", lw=0.6, zorder=0)
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#c0cbdd")
+
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(handles, labels, fontsize=7, loc="upper right",
+                  framealpha=0.9, edgecolor="#d0daea")
+
+    fig_mpl.tight_layout()
+    buf_img = io.BytesIO()
+    fig_mpl.savefig(buf_img, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig_mpl)
+    buf_img.seek(0)
+    return buf_img.read()
+
+
+def build_pdf(chart1_data, chart2_data, scenarios, meta):
+    """
+    Generate a PDF report using matplotlib charts (no kaleido/Chrome needed).
     Returns bytes.
     """
     buf = io.BytesIO()
@@ -588,7 +689,6 @@ def build_pdf(fig1, fig2, scenarios, meta):
     styles = getSampleStyleSheet()
     story  = []
 
-    # ── Title block ──────────────────────────────────────────────────────────
     title_style = ParagraphStyle("title", parent=styles["Heading1"],
                                   fontSize=16, textColor=colors.HexColor("#1b3a6b"),
                                   spaceAfter=4)
@@ -602,92 +702,50 @@ def build_pdf(fig1, fig2, scenarios, meta):
                                   fontSize=11, textColor=colors.HexColor("#1b3a6b"),
                                   spaceBefore=10, spaceAfter=4)
 
-    story.append(Paragraph("⚡ BIW Crash Material Selector — Report", title_style))
+    story.append(Paragraph("BIW Crash Material Selector - Report", title_style))
     story.append(Paragraph(
-        f"v₁ = {meta['v1']} km/h  →  v₂ = {meta['v2']} km/h  |  "
-        f"R = {meta['R']:.3f}  |  CCI target = {meta['CCI_target']/1000:.3f} ×10³  |  "
+        f"v1 = {meta['v1']} km/h  ->  v2 = {meta['v2']} km/h  |  "
+        f"R = {meta['R']:.3f}  |  CCI target = {meta['CCI_target']/1000:.3f} x10^3  |  "
         f"Energy target = {meta['EA_target']:.2f} kJ",
         sub_style))
-    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#d0daea"),
-                             spaceAfter=8))
+    story.append(HRFlowable(width="100%", thickness=1,
+                             color=colors.HexColor("#d0daea"), spaceAfter=8))
 
     # ── Parameters table ────────────────────────────────────────────────────
     story.append(Paragraph("Run Parameters", hdr_style))
     param_data = [
         ["Parameter", "Value"],
-        ["L₁ (mm)", f"{meta['L1']:.2f}"],
-        ["L₂ (mm)", f"{meta['L2']:.2f}"],
-        ["CCI Baseline ×10³", f"{meta['CCI_baseline']/1000:.3f}"],
-        ["CCI Target ×10³",   f"{meta['CCI_target']/1000:.3f}"],
-        ["Energy Ratio R",    f"{meta['R']:.4f}"],
+        ["L1 (mm)",              f"{meta['L1']:.2f}"],
+        ["L2 (mm)",              f"{meta['L2']:.2f}"],
+        ["CCI Baseline x10^3",   f"{meta['CCI_baseline']/1000:.3f}"],
+        ["CCI Target x10^3",     f"{meta['CCI_target']/1000:.3f}"],
+        ["Energy Ratio R",       f"{meta['R']:.4f}"],
         ["Energy Baseline (kJ)", f"{meta['EA_base']:.2f}"],
         ["Energy Target (kJ)",   f"{meta['EA_target']:.2f}"],
     ]
     ts = TableStyle([
-        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#1b3a6b")),
-        ("TEXTCOLOR",  (0,0), (-1,0), colors.white),
-        ("FONTSIZE",   (0,0), (-1,-1), 8),
-        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.HexColor("#f4f6f9"), colors.white]),
-        ("GRID", (0,0), (-1,-1), 0.4, colors.HexColor("#d0daea")),
-        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-        ("TOPPADDING",  (0,0), (-1,-1), 3),
-        ("BOTTOMPADDING",(0,0),(-1,-1), 3),
+        ("BACKGROUND",    (0,0),(-1,0), colors.HexColor("#1b3a6b")),
+        ("TEXTCOLOR",     (0,0),(-1,0), colors.white),
+        ("FONTSIZE",      (0,0),(-1,-1), 8),
+        ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.HexColor("#f4f6f9"), colors.white]),
+        ("GRID",          (0,0),(-1,-1), 0.4, colors.HexColor("#d0daea")),
+        ("FONTNAME",      (0,0),(-1,0), "Helvetica-Bold"),
+        ("TOPPADDING",    (0,0),(-1,-1), 3),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 3),
     ])
     story.append(Table(param_data, colWidths=[90*mm, 60*mm], style=ts))
-    story.append(Spacer(1, 8*mm))
+    story.append(Spacer(1, 6*mm))
 
-    # ── Charts ───────────────────────────────────────────────────────────────
+    # ── Charts (drawn with matplotlib — no Chrome/kaleido) ──────────────────
     story.append(Paragraph("Charts", hdr_style))
-    chart_w = 160*mm   # side-by-side would be ~80mm each; full width for clarity
-    chart_h = 110*mm
-
-    def fig_to_png_bytes(fig):
-        """
-        Try three methods in order, returning raw PNG bytes.
-        Raises RuntimeError with a descriptive message if all fail.
-        """
-        errors = []
-
-        # Method 1: plotly's to_image (uses kaleido under the hood)
-        try:
-            return fig.to_image(format="png", width=900, height=620, scale=2)
-        except Exception as e:
-            errors.append(f"to_image: {e}")
-
-        # Method 2: write_image to a temp file then read back
-        try:
-            import tempfile, os
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                tmp_path = tmp.name
-            fig.write_image(tmp_path, width=900, height=620, scale=2)
-            with open(tmp_path, "rb") as f:
-                data = f.read()
-            os.unlink(tmp_path)
-            return data
-        except Exception as e:
-            errors.append(f"write_image: {e}")
-
-        # Method 3: explicitly invoke kaleido scope
-        try:
-            import plotly.io as pio2
-            scope = pio2.kaleido.scope
-            scope.chromium_args += ("--single-process",)
-            return fig.to_image(format="png", width=900, height=620, scale=2)
-        except Exception as e:
-            errors.append(f"kaleido scope: {e}")
-
-        raise RuntimeError(" | ".join(errors))
-
-    for fig, label in [(fig1, "Chart 1 — Material 1"), (fig2, "Chart 2 — Material 2")]:
+    chart_w = 168*mm
+    chart_h = 112*mm
+    for cdata, label in [(chart1_data, "Chart 1 - Material 1"),
+                         (chart2_data, "Chart 2 - Material 2")]:
         story.append(Paragraph(label, body_style))
-        try:
-            img_bytes = fig_to_png_bytes(fig)
-            img_buf   = io.BytesIO(img_bytes)
-            story.append(RLImage(img_buf, width=chart_w, height=chart_h))
-        except Exception as e:
-            story.append(Paragraph(
-                f"[Chart image could not be rendered. Error: {e}]", body_style))
-        story.append(Spacer(1, 6*mm))
+        img_bytes = render_chart_matplotlib(cdata)
+        story.append(RLImage(io.BytesIO(img_bytes), width=chart_w, height=chart_h))
+        story.append(Spacer(1, 5*mm))
 
     # ── Scenarios table ──────────────────────────────────────────────────────
     if scenarios:
@@ -739,8 +797,74 @@ with st.expander("📄 Generate & Download PDF Report", expanded=False):
             meta = dict(v1=v1, v2=v2, R=R, L1=L1, L2=L2,
                         CCI_baseline=CCI_baseline, CCI_target=CCI_target,
                         EA_base=EA_base, EA_target=EA_target)
+
+            # Build chart data dicts (matplotlib renderer, no kaleido)
+            # --- scatter combos for PDF ---
+            def scatter_combos(remaining, L_side):
+                sp, sf = [], []
+                for rm, t in itertools.product(STD_GRADES, STD_THICKNESSES):
+                    (sp if rm*L_side*t >= remaining else sf).append((t, rm))
+                return sp, sf
+
+            if fixing_mat1:
+                # Chart 1: selected dot, no boundary
+                c1 = dict(
+                    title="Chart 1 - Material 1 (Fixed Selection)",
+                    xlabel="Thickness t1 (mm)", ylabel="Grade RM1 (MPa)",
+                    boundary=None, pass_fill=False,
+                    selected_dot=(t1_sel, RM1_sel, f"RM1={RM1_sel}MPa, t1={t1_sel:.2f}mm"),
+                    pin_marker=None, scatter_pass=None, scatter_fail=None,
+                    sufficient_msg=None,
+                )
+                # Chart 2: boundary + optional scatter/pin
+                if mat_sufficient:
+                    c2 = dict(title="Chart 2 - Material 2 Feasible Region",
+                              xlabel="Thickness t2 (mm)", ylabel="Grade RM2 (MPa)",
+                              boundary=None, pass_fill=False, selected_dot=None,
+                              pin_marker=None, scatter_pass=None, scatter_fail=None,
+                              sufficient_msg="Material 1 alone is sufficient")
+                else:
+                    bnd_t = T_RANGE
+                    bnd_y = np.clip(Remaining/(L2*bnd_t), 350, 1450)
+                    sp, sf = (scatter_combos(Remaining, L2) if show_scatter else (None, None))
+                    pin = ((t_pin_min, RM2_pin, f"t2_min @ RM2={RM2_pin}MPa")
+                           if (fix_other and t_pin_min and t_pin_min > 0) else None)
+                    c2 = dict(title="Chart 2 - Material 2 Feasible Region",
+                              xlabel="Thickness t2 (mm)", ylabel="Grade RM2 (MPa)",
+                              boundary=(bnd_t, bnd_y), pass_fill=True,
+                              selected_dot=None, pin_marker=pin,
+                              scatter_pass=sp, scatter_fail=sf, sufficient_msg=None)
+            else:
+                # Chart 2: selected dot, no boundary
+                c2 = dict(
+                    title="Chart 2 - Material 2 (Fixed Selection)",
+                    xlabel="Thickness t2 (mm)", ylabel="Grade RM2 (MPa)",
+                    boundary=None, pass_fill=False,
+                    selected_dot=(t2_sel, RM2_sel, f"RM2={RM2_sel}MPa, t2={t2_sel:.2f}mm"),
+                    pin_marker=None, scatter_pass=None, scatter_fail=None,
+                    sufficient_msg=None,
+                )
+                # Chart 1: boundary + optional scatter/pin
+                if mat_sufficient:
+                    c1 = dict(title="Chart 1 - Material 1 Feasible Region",
+                              xlabel="Thickness t1 (mm)", ylabel="Grade RM1 (MPa)",
+                              boundary=None, pass_fill=False, selected_dot=None,
+                              pin_marker=None, scatter_pass=None, scatter_fail=None,
+                              sufficient_msg="Material 2 alone is sufficient")
+                else:
+                    bnd_t = T_RANGE
+                    bnd_y = np.clip(Remaining/(L1*bnd_t), 350, 1450)
+                    sp, sf = (scatter_combos(Remaining, L1) if show_scatter else (None, None))
+                    pin = ((t_pin_min, RM1_pin, f"t1_min @ RM1={RM1_pin}MPa")
+                           if (fix_other and t_pin_min and t_pin_min > 0) else None)
+                    c1 = dict(title="Chart 1 - Material 1 Feasible Region",
+                              xlabel="Thickness t1 (mm)", ylabel="Grade RM1 (MPa)",
+                              boundary=(bnd_t, bnd_y), pass_fill=True,
+                              selected_dot=None, pin_marker=pin,
+                              scatter_pass=sp, scatter_fail=sf, sufficient_msg=None)
+
             try:
-                pdf_bytes = build_pdf(fig1, fig2, st.session_state.scenarios, meta)
+                pdf_bytes = build_pdf(c1, c2, st.session_state.scenarios, meta)
                 st.download_button(
                     label="⬇️ Download Report PDF",
                     data=pdf_bytes,
@@ -748,8 +872,6 @@ with st.expander("📄 Generate & Download PDF Report", expanded=False):
                     mime="application/pdf",
                 )
                 st.success("PDF ready — click the button above to download.")
-            except ImportError as e:
-                st.error(f"Missing library: {e}. Run: pip install kaleido reportlab")
             except Exception as e:
                 import traceback
                 st.error("PDF generation failed. See details below:")
