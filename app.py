@@ -1,13 +1,6 @@
 """
-BIW Crash Material Selection Tool  —  v3
+BIW Crash Material Selection Tool
 ==========================================
-New in this version:
-  1. Export Report  — download a PDF with charts + results summary
-  2. Scatter Overlay — grid of standard grade × thickness combos,
-     coloured green/red by pass/fail, overlaid on the boundary chart
-  3. Multi-Scenario Comparison — lock in named scenarios and compare
-     them in a table below the charts
-
 Run with:
     streamlit run app.py
 """
@@ -100,7 +93,7 @@ footer {visibility:hidden;} #MainMenu {visibility:hidden;}
 st.markdown("""
 <div class="app-header">
     <h1>⚡ BIW Crash Material Selector</h1>
-    <p>Concept-stage Body-in-White crash sizing tool &nbsp;·&nbsp; CCI = RM₁·L₁·t₁ + RM₂·L₂·t₂</p>
+    <p>Concept-stage Body-in-White crash sizing tool &nbsp;·&nbsp; CCI (Crash Capacity Index)= RM₁·L₁·t₁ + RM₂·L₂·t₂</p>
 </div>
 """, unsafe_allow_html=True)
 
