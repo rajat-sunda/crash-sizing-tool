@@ -1,19 +1,6 @@
 """
-BIW Crash Material Selection Tool  —  v4
+BIW Crash Material Selection Tool
 ==========================================
-Features:
-  1. Export Report  — PDF with charts + results summary (matplotlib, no kaleido)
-  2. Scatter Overlay — standard grade × thickness combos coloured by pass/fail
-  3. Multi-Scenario Comparison — save and compare named scenarios
-  4. Weight Penalty — hover tooltips, pin marker, results card, scatter overlay,
-     and scenario table all show mass delta vs baseline (kg/m length of rail)
-
-Weight penalty formula:
-    ΔW = L_explore (m) × (t_new − t_baseline) (m) × ρ_steel (kg/m³)
-    ρ_steel = 7850 kg/m³
-    L in mm → convert to m by ÷ 1000
-    t in mm → convert to m by ÷ 1000
-
 Run with:
     streamlit run app.py
 """
@@ -109,7 +96,7 @@ footer {visibility:hidden;} #MainMenu {visibility:hidden;}
 st.markdown("""
 <div class="app-header">
     <h1>⚡ BIW Crash Material Selector</h1>
-    <p>Concept-stage Body-in-White crash sizing tool &nbsp;·&nbsp; CCI = RM₁·L₁·t₁ + RM₂·L₂·t₂</p>
+    <p>Concept-stage Body-in-White crash sizing tool &nbsp;·&nbsp; CCI (Crash Capacity Index) = RM₁·L₁·t₁ + RM₂·L₂·t₂</p>
 </div>
 """, unsafe_allow_html=True)
 
