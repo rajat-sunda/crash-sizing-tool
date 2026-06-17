@@ -695,7 +695,6 @@ def build_pdf(fig1, fig2, scenarios, meta):
     return buf.read()
 
 with st.expander("📄 Generate & Download PDF Report", expanded=False):
-    st.caption("Charts are embedded as images. Requires **kaleido** (`pip install kaleido`).")
     if st.button("📥 Build PDF now"):
         with st.spinner("Rendering charts and building PDF…"):
             meta = dict(v1=v1, v2=v2, R=R, L1=L1, L2=L2,
