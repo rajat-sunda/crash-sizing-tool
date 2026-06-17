@@ -1,6 +1,12 @@
 """
-BIW Crash Material Selection Tool
+BIW Crash Material Selection Tool  —  v3
 ==========================================
+New in this version:
+  1. Export Report  — download a PDF with charts + results summary
+  2. Scatter Overlay — grid of standard grade × thickness combos,
+     coloured green/red by pass/fail, overlaid on the boundary chart
+  3. Multi-Scenario Comparison — lock in named scenarios and compare
+     them in a table below the charts
 
 Run with:
     streamlit run app.py
@@ -95,7 +101,7 @@ footer {visibility:hidden;} #MainMenu {visibility:hidden;}
 st.markdown("""
 <div class="app-header">
     <h1>⚡ BIW Crash Material Selector</h1>
-    <p>Concept-stage Body-in-White crash sizing tool &nbsp;·&nbsp; CCI (Crash Capacity Index) = RM₁·L₁·t₁ + RM₂·L₂·t₂</p>
+    <p>Concept-stage Body-in-White crash sizing tool &nbsp;·&nbsp; CCI = RM₁·L₁·t₁ + RM₂·L₂·t₂</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -632,17 +638,56 @@ def build_pdf(fig1, fig2, scenarios, meta):
 
     # ── Charts ───────────────────────────────────────────────────────────────
     story.append(Paragraph("Charts", hdr_style))
-    chart_w = 85*mm
-    chart_h = 62*mm
-    for fig, label in [(fig1, "Chart 1"), (fig2, "Chart 2")]:
+    chart_w = 160*mm   # side-by-side would be ~80mm each; full width for clarity
+    chart_h = 110*mm
+
+    def fig_to_png_bytes(fig):
+        """
+        Try three methods in order, returning raw PNG bytes.
+        Raises RuntimeError with a descriptive message if all fail.
+        """
+        errors = []
+
+        # Method 1: plotly's to_image (uses kaleido under the hood)
         try:
-            img_bytes = fig.to_image(format="png", width=700, height=500, scale=2)
+            return fig.to_image(format="png", width=900, height=620, scale=2)
+        except Exception as e:
+            errors.append(f"to_image: {e}")
+
+        # Method 2: write_image to a temp file then read back
+        try:
+            import tempfile, os
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp_path = tmp.name
+            fig.write_image(tmp_path, width=900, height=620, scale=2)
+            with open(tmp_path, "rb") as f:
+                data = f.read()
+            os.unlink(tmp_path)
+            return data
+        except Exception as e:
+            errors.append(f"write_image: {e}")
+
+        # Method 3: explicitly invoke kaleido scope
+        try:
+            import plotly.io as pio2
+            scope = pio2.kaleido.scope
+            scope.chromium_args += ("--single-process",)
+            return fig.to_image(format="png", width=900, height=620, scale=2)
+        except Exception as e:
+            errors.append(f"kaleido scope: {e}")
+
+        raise RuntimeError(" | ".join(errors))
+
+    for fig, label in [(fig1, "Chart 1 — Material 1"), (fig2, "Chart 2 — Material 2")]:
+        story.append(Paragraph(label, body_style))
+        try:
+            img_bytes = fig_to_png_bytes(fig)
             img_buf   = io.BytesIO(img_bytes)
-            story.append(Paragraph(label, body_style))
             story.append(RLImage(img_buf, width=chart_w, height=chart_h))
-            story.append(Spacer(1, 4*mm))
-        except Exception:
-            story.append(Paragraph(f"[{label} image unavailable — install kaleido]", body_style))
+        except Exception as e:
+            story.append(Paragraph(
+                f"[Chart image could not be rendered. Error: {e}]", body_style))
+        story.append(Spacer(1, 6*mm))
 
     # ── Scenarios table ──────────────────────────────────────────────────────
     if scenarios:
@@ -706,4 +751,6 @@ with st.expander("📄 Generate & Download PDF Report", expanded=False):
             except ImportError as e:
                 st.error(f"Missing library: {e}. Run: pip install kaleido reportlab")
             except Exception as e:
-                st.error(f"PDF generation failed: {e}")
+                import traceback
+                st.error("PDF generation failed. See details below:")
+                st.code(traceback.format_exc(), language="text")
