@@ -534,15 +534,18 @@ if st.session_state.scenarios:
         })
     df_sc = pd.DataFrame(rows)
 
-    # Colour verdict column
+    # Colour verdict column — use .map() (pandas ≥2.1) with .applymap() fallback
     def colour_verdict(val):
-        if "PASS" in val or "OK" in val:
+        if "PASS" in str(val) or "OK" in str(val):
             return "background-color:#e6f9ee; color:#1a7a3c; font-weight:700"
-        if "FAIL" in val:
+        if "FAIL" in str(val):
             return "background-color:#fdecea; color:#c0392b; font-weight:700"
         return ""
 
-    styled = df_sc.style.applymap(colour_verdict, subset=["Verdict"])
+    try:
+        styled = df_sc.style.map(colour_verdict, subset=["Verdict"])
+    except AttributeError:
+        styled = df_sc.style.applymap(colour_verdict, subset=["Verdict"])
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
     col_dl, col_clr = st.columns([1,1])
