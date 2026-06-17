@@ -1,6 +1,19 @@
 """
-BIW Crash Material Selection Tool
+BIW Crash Material Selection Tool  —  v4
 ==========================================
+Features:
+  1. Export Report  — PDF with charts + results summary (matplotlib, no kaleido)
+  2. Scatter Overlay — standard grade × thickness combos coloured by pass/fail
+  3. Multi-Scenario Comparison — save and compare named scenarios
+  4. Weight Penalty — hover tooltips, pin marker, results card, scatter overlay,
+     and scenario table all show mass delta vs baseline (kg/m length of rail)
+
+Weight penalty formula:
+    ΔW = L_explore (m) × (t_new − t_baseline) (m) × ρ_steel (kg/m³)
+    ρ_steel = 7850 kg/m³
+    L in mm → convert to m by ÷ 1000
+    t in mm → convert to m by ÷ 1000
+
 Run with:
     streamlit run app.py
 """
@@ -96,7 +109,7 @@ footer {visibility:hidden;} #MainMenu {visibility:hidden;}
 st.markdown("""
 <div class="app-header">
     <h1>⚡ BIW Crash Material Selector</h1>
-    <p>Concept-stage Body-in-White crash sizing tool &nbsp;·&nbsp; CCI (Crash Capacity Index) = RM₁·L₁·t₁ + RM₂·L₂·t₂</p>
+    <p>Concept-stage Body-in-White crash sizing tool &nbsp;·&nbsp; CCI = RM₁·L₁·t₁ + RM₂·L₂·t₂</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -530,44 +543,17 @@ else:
     t_min_display     = "—"
     remaining_display = "—" if mat_sufficient else f"{Remaining/1000:.3f} ×10³"
 
-# Weight penalty display strings — pre-built outside the f-string to avoid escaping
 fixed_side_lbl   = "Mat 1" if fixing_mat1 else "Mat 2"
 explore_side_lbl = "Mat 2" if fixing_mat1 else "Mat 1"
 
-def _wp_html(w):
+def _wp_delta(w):
+    """Return (value_str, delta_str) for st.metric — delta drives the red/green arrow."""
     if w is None:
-        return '<span style="color:#5a6a8a;">—</span>'
+        return "—", None
     sign = "+" if w > 0 else ""
-    color = "#c0392b" if w > 0 else ("#1a7a3c" if w < 0 else "#5a6a8a")
-    return f'<span style="color:{color}; font-weight:700;">{sign}{w:.3f} kg/m</span>'
+    return f"{sign}{w:.3f} kg/m", w   # passing float as delta colours it automatically
 
-wp_fixed_html = _wp_html(wp_fixed)
-wp_pin_html   = _wp_html(wp_pin)
-wp_total_html = _wp_html(wp_total)
-
-_mass_section = f"""
-    <div style="border-top:1px solid #e8ecf4; margin-top:14px; padding-top:12px;">
-        <div style="font-size:.70rem; color:#6b7a99; letter-spacing:.04em; text-transform:uppercase; margin-bottom:8px;">
-            ⚖️ MASS PENALTY vs BASELINE
-            <span style="font-size:.68rem; color:#8896b0; text-transform:none;">&nbsp;(kg per metre of rail)</span>
-        </div>
-        <div style="display:flex; gap:32px; flex-wrap:wrap;">
-            <div>
-                <div style="font-size:.70rem; color:#6b7a99; text-transform:uppercase; margin-bottom:2px;">{fixed_side_lbl} Mass Penalty</div>
-                <div style="font-size:1.1rem; font-weight:600;">{wp_fixed_html}</div>
-            </div>
-            <div>
-                <div style="font-size:.70rem; color:#6b7a99; text-transform:uppercase; margin-bottom:2px;">{explore_side_lbl} Mass Penalty (pinned t_min)</div>
-                <div style="font-size:1.1rem; font-weight:600;">{wp_pin_html}</div>
-            </div>
-            <div>
-                <div style="font-size:.70rem; color:#6b7a99; text-transform:uppercase; margin-bottom:2px;">Total Mass Penalty (both sides)</div>
-                <div style="font-size:1.1rem; font-weight:600;">{wp_total_html}</div>
-            </div>
-        </div>
-    </div>
-"""
-
+# ── Results card — CCI / energy / status ────────────────────────────────────
 st.markdown(f"""
 <div class="result-card">
     <h4>📊 Results Summary</h4>
@@ -587,9 +573,36 @@ st.markdown(f"""
             <div class="rlabel" style="margin-top:5px;">{status_note}</div>
         </div>
     </div>
-    {_mass_section}
 </div>
 """, unsafe_allow_html=True)
+
+# ── Mass Penalty section — rendered with st.metric (no nested HTML) ──────────
+st.markdown("#### ⚖️ Mass Penalty vs Baseline  "
+            "<span style='font-size:.78rem; color:#8896b0; font-weight:400'>"
+            "(kg per metre of rail — positive = heavier, negative = lighter)</span>",
+            unsafe_allow_html=True)
+
+mp_c1, mp_c2, mp_c3 = st.columns(3)
+
+val_fixed,  d_fixed  = _wp_delta(wp_fixed)
+val_pin,    d_pin    = _wp_delta(wp_pin)
+val_total,  d_total  = _wp_delta(wp_total)
+
+with mp_c1:
+    st.metric(label=f"{fixed_side_lbl} Mass Penalty",
+              value=val_fixed,
+              delta=f"{d_fixed:+.3f} kg/m" if d_fixed is not None else None,
+              delta_color="inverse")   # inverse: positive delta = red (heavier = bad)
+with mp_c2:
+    st.metric(label=f"{explore_side_lbl} Mass Penalty (at t_min)",
+              value=val_pin,
+              delta=f"{d_pin:+.3f} kg/m" if d_pin is not None else None,
+              delta_color="inverse")
+with mp_c3:
+    st.metric(label="Total Mass Penalty",
+              value=val_total,
+              delta=f"{d_total:+.3f} kg/m" if d_total is not None else None,
+              delta_color="inverse")
 
 # ===========================================================================
 # FEATURE 3 — Multi-Scenario Comparison
