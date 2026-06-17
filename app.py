@@ -74,6 +74,9 @@ html, body,
 .result-row { display:flex; gap:32px; flex-wrap:wrap; align-items:flex-start; }
 .result-item .rlabel { font-size:.70rem; color:#6b7a99; letter-spacing:.04em; text-transform:uppercase; margin-bottom:2px; }
 .result-item .rvalue { font-size:1.1rem; font-weight:600; color:#1a1f2e; }
+.weight-pos { color:#c0392b; font-weight:700; }   /* heavier = red  */
+.weight-neg { color:#1a7a3c; font-weight:700; }   /* lighter = green */
+.weight-neu { color:#5a6a8a; }
 .badge-pass { background:#e6f9ee; color:#1a7a3c; border:1px solid #5abf7e; padding:4px 14px; border-radius:5px; font-size:.85rem; font-weight:700; }
 .badge-fail { background:#fdecea; color:#c0392b; border:1px solid #e07070; padding:4px 14px; border-radius:5px; font-size:.85rem; font-weight:700; }
 .badge-ok   { background:#e8f0fe; color:#1b3a9e; border:1px solid #7096e8; padding:4px 14px; border-radius:5px; font-size:.85rem; font-weight:700; }
@@ -93,13 +96,17 @@ footer {visibility:hidden;} #MainMenu {visibility:hidden;}
 st.markdown("""
 <div class="app-header">
     <h1>⚡ BIW Crash Material Selector</h1>
-    <p>Concept-stage Body-in-White crash sizing tool &nbsp;·&nbsp; CCI (Crash Capacity Index)= RM₁·L₁·t₁ + RM₂·L₂·t₂</p>
+    <p>Concept-stage Body-in-White crash sizing tool &nbsp;·&nbsp; CCI (Crash Capacity Index) = RM₁·L₁·t₁ + RM₂·L₂·t₂</p>
 </div>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Constants & helpers
 # ---------------------------------------------------------------------------
+STEEL_DENSITY   = 7850.0          # kg/m³
+STD_GRADES      = [420, 590, 780, 980, 1180, 1310]
+STD_THICKNESSES = [0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2, 2.5]
+
 def seg_len(a, b):
     return math.sqrt((b[0]-a[0])**2 + (b[1]-a[1])**2)
 
@@ -110,15 +117,32 @@ def compute_wall_lengths(pts):
     L2 = seg_len(P7,P5)+seg_len(P5,P2)+seg_len(P2,P3)+seg_len(P3,P6)+seg_len(P6,P8)
     return L1, L2
 
-# Standard grades and thickness steps used for scatter overlay & comparisons
-STD_GRADES      = [420, 590, 780, 980, 1180, 1310]
-STD_THICKNESSES = [0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2, 2.5]
+def weight_penalty(L_mm, t_new_mm, t_base_mm):
+    """
+    Mass delta per unit rail length (kg/m) for one material side.
+    L_mm      : wall length in mm
+    t_new_mm  : new thickness in mm
+    t_base_mm : baseline thickness in mm
+    Returns signed kg/m value (positive = heavier, negative = lighter).
+    """
+    return (L_mm / 1000.0) * ((t_new_mm - t_base_mm) / 1000.0) * STEEL_DENSITY
+
+def fmt_weight(w_kg_per_m):
+    """Format weight penalty with sign and colour class."""
+    sign   = "+" if w_kg_per_m > 0 else ""
+    cls    = "weight-pos" if w_kg_per_m > 0 else ("weight-neg" if w_kg_per_m < 0 else "weight-neu")
+    return f'<span class="{cls}">{sign}{w_kg_per_m:.3f} kg/m</span>'
+
+def fmt_weight_plain(w_kg_per_m):
+    """Plain text version for PDF/CSV."""
+    sign = "+" if w_kg_per_m > 0 else ""
+    return f"{sign}{w_kg_per_m:.3f} kg/m"
 
 # ---------------------------------------------------------------------------
-# Session state for multi-scenario list
+# Session state
 # ---------------------------------------------------------------------------
 if "scenarios" not in st.session_state:
-    st.session_state.scenarios = []   # list of dicts
+    st.session_state.scenarios = []
 
 # ---------------------------------------------------------------------------
 # Sidebar
@@ -153,7 +177,6 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Mode toggle
     st.markdown("**🔀 Analysis Mode**")
     mode = st.radio(
         "Fix which material?",
@@ -186,11 +209,9 @@ with st.sidebar:
         RM2_pin   = None; RM1_sel = None; t1_sel = None
 
     st.markdown("---")
-
-    # ── Feature 2: Scatter overlay toggle ───────────────────────────────────
     st.markdown("**🔵 Scatter Overlay**")
     show_scatter = st.checkbox("Show all grade × thickness combos", value=False,
-                               help="Plots every standard grade/thickness combo as a coloured dot (green=PASS, red=FAIL) on the boundary chart.")
+                               help="Green = PASS, Red = FAIL. Hover shows weight penalty.")
 
 # ---------------------------------------------------------------------------
 # Core calculations
@@ -203,19 +224,43 @@ C            = EA_base/CCI_baseline if CCI_baseline > 0 else 0.0
 EA_target    = C * CCI_target
 
 if fixing_mat1:
-    S_fixed   = RM1_sel * L1 * t1_sel
-    Remaining = CCI_target - S_fixed
+    # Fixed side = Mat1; explore side = Mat2
+    t_fixed_base  = t1_base
+    t_explore_base= t2_base
+    L_explore     = L2
+    L_fixed       = L1
+    S_fixed        = RM1_sel * L1 * t1_sel
+    Remaining      = CCI_target - S_fixed
     mat_sufficient = Remaining <= 0
-    t_pin_min = None
+    t_pin_min      = None
     if fix_other and not mat_sufficient and RM2_pin > 0 and L2 > 0:
         t_pin_min = Remaining / (RM2_pin * L2)
+    # Weight penalty for the FIXED side (Mat 1)
+    wp_fixed = weight_penalty(L1, t1_sel, t1_base)
 else:
-    S_fixed   = RM2_sel * L2 * t2_sel
-    Remaining = CCI_target - S_fixed
+    # Fixed side = Mat2; explore side = Mat1
+    t_fixed_base  = t2_base
+    t_explore_base= t1_base
+    L_explore     = L1
+    L_fixed       = L2
+    S_fixed        = RM2_sel * L2 * t2_sel
+    Remaining      = CCI_target - S_fixed
     mat_sufficient = Remaining <= 0
-    t_pin_min = None
+    t_pin_min      = None
     if fix_other and not mat_sufficient and RM1_pin > 0 and L1 > 0:
         t_pin_min = Remaining / (RM1_pin * L1)
+    # Weight penalty for the FIXED side (Mat 2)
+    wp_fixed = weight_penalty(L2, t2_sel, t2_base)
+
+# Weight penalty for pin (explore side), if pinned
+wp_pin = None
+if t_pin_min is not None and t_pin_min > 0:
+    wp_pin = weight_penalty(L_explore, t_pin_min, t_explore_base)
+
+# Total weight penalty (fixed + explore sides combined), only if both known
+wp_total = None
+if t_pin_min is not None and t_pin_min > 0:
+    wp_total = wp_fixed + wp_pin
 
 # ---------------------------------------------------------------------------
 # Metric cards
@@ -240,9 +285,9 @@ st.markdown(f"""
 # ---------------------------------------------------------------------------
 # Chart helpers
 # ---------------------------------------------------------------------------
-GRADES      = [590, 780, 980, 1180]
-GRADE_COLOR = "rgba(80,110,180,0.45)"
-T_RANGE     = np.linspace(0.8, 2.5, 300)
+GRADES       = [590, 780, 980, 1180]
+GRADE_COLOR  = "rgba(80,110,180,0.45)"
+T_RANGE      = np.linspace(0.8, 2.5, 300)
 Y_MIN, Y_MAX = 350, 1450
 
 BASE_LAYOUT = dict(
@@ -278,18 +323,52 @@ def add_boundary_zones(fig, t_range, bnd_cl):
         line=dict(width=0), hoverinfo="skip", showlegend=False,
     ))
 
-def add_selected_dot(fig, x_val, y_val, label):
+def add_selected_dot(fig, x_val, y_val, label, wp_kg=None):
+    """Dot for the fixed material. Optionally show weight penalty in hover."""
+    hover = label
+    if wp_kg is not None:
+        sign = "+" if wp_kg > 0 else ""
+        hover += f"<br>ΔWeight = {sign}{wp_kg:.3f} kg/m"
     fig.add_trace(go.Scatter(
         x=[x_val], y=[y_val], mode="markers",
         marker=dict(color="#0d8c4e", size=14, symbol="circle",
                     line=dict(color="#1b3a6b", width=2.5)),
         name=label,
-        hovertemplate=f"{label}<extra></extra>",
+        hovertemplate=hover + "<extra></extra>",
     ))
 
-def add_pin_marker(fig, t_val, rm_val, label):
+def add_boundary_curve_with_weight(fig, t_range, bnd_cl, L_explore, t_base_mm, axis="t2"):
+    """
+    Boundary curve where hover shows:
+      - thickness, min RM
+      - weight penalty at that thickness vs baseline
+    """
+    lbl = "t₁" if axis == "t1" else "t₂"
+    ax  = "RM₁" if axis == "t1" else "RM₂"
+    # Pre-compute weight penalty array for every point on the curve
+    wp_arr = np.array([weight_penalty(L_explore, float(t), t_base_mm) for t in t_range])
+    sign_arr = np.where(wp_arr >= 0, "+", "")
+    custom = np.stack([wp_arr, bnd_cl], axis=-1)   # shape (N, 2)
+    fig.add_trace(go.Scatter(
+        x=t_range, y=bnd_cl, mode="lines",
+        line=dict(color="#e05c1a", width=2.5),
+        name=f"Min {ax} boundary",
+        customdata=custom,
+        hovertemplate=(
+            f"{lbl}: %{{x:.2f}} mm<br>"
+            f"Min {ax}: %{{customdata[1]:.0f}} MPa<br>"
+            f"ΔWeight: %{{customdata[0]:+.3f}} kg/m"
+            "<extra></extra>"
+        ),
+    ))
+
+def add_pin_marker(fig, t_val, rm_val, label, wp_kg=None):
     in_range = 0.8 <= t_val <= 2.5
     mc = "#0d8c4e" if in_range else "#c0392b"
+    hover = f"t_min={t_val:.3f}mm"
+    if wp_kg is not None:
+        sign = "+" if wp_kg > 0 else ""
+        hover += f"<br>ΔWeight = {sign}{wp_kg:.3f} kg/m"
     fig.add_trace(go.Scatter(
         x=[t_val], y=[rm_val], mode="markers+text",
         marker=dict(color=mc, size=14, symbol="diamond",
@@ -297,41 +376,51 @@ def add_pin_marker(fig, t_val, rm_val, label):
         text=[f"  t_min={t_val:.2f}mm"], textposition="middle right",
         textfont=dict(size=10, color=mc),
         name=label,
-        hovertemplate=f"t_min={t_val:.3f}mm<extra></extra>",
+        hovertemplate=hover + "<extra></extra>",
     ))
 
-def add_scatter_overlay(fig, remaining, L_explore, axis="t2"):
+def add_scatter_overlay(fig, remaining, L_explore, t_base_mm, axis="t2"):
     """
-    Feature 2: plot all standard grade × thickness combinations.
-    Each point is green (PASS: CCI_from_this_combo >= Remaining)
-    or red (FAIL) on the boundary chart.
-    remaining  — how much CCI the explore material must provide
-    L_explore  — wall length of the explore material
-    axis       — "t1" or "t2" (just for hover label)
+    Scatter of all standard grade × thickness combos.
+    Hover shows: grade, thickness, pass/fail, weight penalty.
     """
-    pass_x, pass_y = [], []
-    fail_x, fail_y = [], []
+    pass_x, pass_y, pass_wp = [], [], []
+    fail_x, fail_y, fail_wp = [], [], []
     for rm, t in itertools.product(STD_GRADES, STD_THICKNESSES):
         cci = rm * L_explore * t
+        wp  = weight_penalty(L_explore, t, t_base_mm)
         if cci >= remaining:
-            pass_x.append(t); pass_y.append(rm)
+            pass_x.append(t); pass_y.append(rm); pass_wp.append(wp)
         else:
-            fail_x.append(t); fail_y.append(rm)
+            fail_x.append(t); fail_y.append(rm); fail_wp.append(wp)
+
     lbl = "t₁" if axis == "t1" else "t₂"
     ax  = "RM₁" if axis == "t1" else "RM₂"
+
+    def hover_tmpl(status):
+        return (
+            f"{ax}=%{{y}} MPa  {lbl}=%{{x:.2f}} mm<br>"
+            f"ΔWeight=%{{customdata:+.3f}} kg/m"
+            f"<extra>{status}</extra>"
+        )
+
     if pass_x:
         fig.add_trace(go.Scatter(
             x=pass_x, y=pass_y, mode="markers",
             marker=dict(color="rgba(22,160,80,0.75)", size=9, symbol="circle",
                         line=dict(color="rgba(22,160,80,1)", width=1)),
-            name="PASS combo", hovertemplate=f"{ax}=%{{y}} MPa  {lbl}=%{{x}} mm<extra>PASS</extra>",
+            customdata=pass_wp,
+            name="PASS combo",
+            hovertemplate=hover_tmpl("PASS"),
         ))
     if fail_x:
         fig.add_trace(go.Scatter(
             x=fail_x, y=fail_y, mode="markers",
             marker=dict(color="rgba(210,50,40,0.65)", size=9, symbol="circle",
                         line=dict(color="rgba(210,50,40,1)", width=1)),
-            name="FAIL combo", hovertemplate=f"{ax}=%{{y}} MPa  {lbl}=%{{x}} mm<extra>FAIL</extra>",
+            customdata=fail_wp,
+            name="FAIL combo",
+            hovertemplate=hover_tmpl("FAIL"),
         ))
 
 # ---------------------------------------------------------------------------
@@ -341,7 +430,10 @@ fig1 = go.Figure()
 add_grade_lines(fig1)
 
 if fixing_mat1:
-    add_selected_dot(fig1, t1_sel, RM1_sel, f"RM₁={RM1_sel} MPa, t₁={t1_sel:.2f}mm")
+    # Fixed: show selected dot with weight penalty of Mat1
+    add_selected_dot(fig1, t1_sel, RM1_sel,
+                     f"RM₁={RM1_sel} MPa, t₁={t1_sel:.2f}mm",
+                     wp_kg=wp_fixed)
     chart1_title = "Chart 1 — Material 1 (Fixed Selection)"
 else:
     chart1_title = "Chart 1 — Material 1 Feasible Region"
@@ -354,16 +446,13 @@ else:
         bnd    = Remaining / (L1 * T_RANGE)
         bnd_cl = np.clip(bnd, Y_MIN, Y_MAX)
         add_boundary_zones(fig1, T_RANGE, bnd_cl)
-        # Feature 2 — scatter overlay on exploration chart
         if show_scatter:
-            add_scatter_overlay(fig1, Remaining, L1, axis="t1")
-        fig1.add_trace(go.Scatter(
-            x=T_RANGE, y=bnd_cl, mode="lines",
-            line=dict(color="#e05c1a", width=2.5), name="Min RM₁ boundary",
-            hovertemplate="t₁:%{x:.2f}mm  Min RM₁:%{y:.0f}MPa<extra></extra>",
-        ))
+            add_scatter_overlay(fig1, Remaining, L1, t1_base, axis="t1")
+        # Boundary curve with weight penalty in hover
+        add_boundary_curve_with_weight(fig1, T_RANGE, bnd_cl, L1, t1_base, axis="t1")
         if fix_other and t_pin_min is not None and t_pin_min > 0:
-            add_pin_marker(fig1, t_pin_min, RM1_pin, f"t₁_min @ RM₁={RM1_pin}MPa")
+            add_pin_marker(fig1, t_pin_min, RM1_pin,
+                           f"t₁_min @ RM₁={RM1_pin}MPa", wp_kg=wp_pin)
 
 fig1.update_layout(
     **BASE_LAYOUT,
@@ -389,19 +478,18 @@ if fixing_mat1:
         bnd    = Remaining / (L2 * T_RANGE)
         bnd_cl = np.clip(bnd, Y_MIN, Y_MAX)
         add_boundary_zones(fig2, T_RANGE, bnd_cl)
-        # Feature 2 — scatter overlay on exploration chart
         if show_scatter:
-            add_scatter_overlay(fig2, Remaining, L2, axis="t2")
-        fig2.add_trace(go.Scatter(
-            x=T_RANGE, y=bnd_cl, mode="lines",
-            line=dict(color="#e05c1a", width=2.5), name="Min RM₂ boundary",
-            hovertemplate="t₂:%{x:.2f}mm  Min RM₂:%{y:.0f}MPa<extra></extra>",
-        ))
+            add_scatter_overlay(fig2, Remaining, L2, t2_base, axis="t2")
+        # Boundary curve with weight penalty in hover
+        add_boundary_curve_with_weight(fig2, T_RANGE, bnd_cl, L2, t2_base, axis="t2")
         if fix_other and t_pin_min is not None and t_pin_min > 0:
-            add_pin_marker(fig2, t_pin_min, RM2_pin, f"t₂_min @ RM₂={RM2_pin}MPa")
+            add_pin_marker(fig2, t_pin_min, RM2_pin,
+                           f"t₂_min @ RM₂={RM2_pin}MPa", wp_kg=wp_pin)
 else:
     chart2_title = "Chart 2 — Material 2 (Fixed Selection)"
-    add_selected_dot(fig2, t2_sel, RM2_sel, f"RM₂={RM2_sel}MPa, t₂={t2_sel:.2f}mm")
+    add_selected_dot(fig2, t2_sel, RM2_sel,
+                     f"RM₂={RM2_sel}MPa, t₂={t2_sel:.2f}mm",
+                     wp_kg=wp_fixed)
 
 fig2.update_layout(
     **BASE_LAYOUT,
@@ -420,12 +508,12 @@ with col2:
     st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
 
 # ---------------------------------------------------------------------------
-# Results card
+# Results card  (includes weight penalty section)
 # ---------------------------------------------------------------------------
 if mat_sufficient:
-    fixed_name   = "Material 1" if fixing_mat1 else "Material 2"
-    status_badge = f'<span class="badge-ok">✅ {fixed_name.upper()} ALONE SUFFICIENT</span>'
-    status_note  = f"{fixed_name} contribution exceeds CCI target."
+    fixed_name    = "Material 1" if fixing_mat1 else "Material 2"
+    status_badge  = f'<span class="badge-ok">✅ {fixed_name.upper()} ALONE SUFFICIENT</span>'
+    status_note   = f"{fixed_name} contribution exceeds CCI target."
     t_min_display = "—"; remaining_display = "—"
 elif fix_other and t_pin_min is not None:
     passes        = 0.8 <= t_pin_min <= 2.5
@@ -440,6 +528,14 @@ else:
     status_note       = ""
     t_min_display     = "—"
     remaining_display = "—" if mat_sufficient else f"{Remaining/1000:.3f} ×10³"
+
+# Weight penalty display strings
+fixed_side_lbl   = "Mat 1" if fixing_mat1 else "Mat 2"
+explore_side_lbl = "Mat 2" if fixing_mat1 else "Mat 1"
+
+wp_fixed_html = fmt_weight(wp_fixed)
+wp_pin_html   = fmt_weight(wp_pin)   if wp_pin   is not None else "<span class='weight-neu'>—</span>"
+wp_total_html = fmt_weight(wp_total) if wp_total is not None else "<span class='weight-neu'>—</span>"
 
 st.markdown(f"""
 <div class="result-card">
@@ -458,6 +554,26 @@ st.markdown(f"""
         <div class="result-item" style="margin-left:auto;align-self:center;text-align:right;">
             {status_badge}
             <div class="rlabel" style="margin-top:5px;">{status_note}</div>
+        </div>
+    </div>
+
+    <div style="border-top:1px solid #e8ecf4; margin-top:14px; padding-top:12px;">
+        <div class="rlabel" style="margin-bottom:8px;">⚖️ WEIGHT PENALTY vs BASELINE &nbsp;
+            <span style="font-size:.68rem; color:#8896b0;">(kg per metre of rail)</span>
+        </div>
+        <div class="result-row">
+            <div class="result-item">
+                <div class="rlabel">{fixed_side_lbl} ΔWeight</div>
+                <div class="rvalue">{wp_fixed_html}</div>
+            </div>
+            <div class="result-item">
+                <div class="rlabel">{explore_side_lbl} ΔWeight (pinned t_min)</div>
+                <div class="rvalue">{wp_pin_html}</div>
+            </div>
+            <div class="result-item">
+                <div class="rlabel">Total ΔWeight (both sides)</div>
+                <div class="rvalue">{wp_total_html}</div>
+            </div>
         </div>
     </div>
 </div>
@@ -483,6 +599,9 @@ with st.expander("➕ Add current selection as a scenario", expanded=True):
                 t_min=t_pin_min if (fix_other and t_pin_min is not None) else None,
                 passes=(0.8 <= t_pin_min <= 2.5) if (fix_other and t_pin_min is not None) else None,
                 mat_sufficient=mat_sufficient,
+                wp_fixed=wp_fixed,
+                wp_pin=wp_pin,
+                wp_total=wp_total,
             )
         else:
             sc = dict(
@@ -495,160 +614,143 @@ with st.expander("➕ Add current selection as a scenario", expanded=True):
                 t_min=t_pin_min if (fix_other and t_pin_min is not None) else None,
                 passes=(0.8 <= t_pin_min <= 2.5) if (fix_other and t_pin_min is not None) else None,
                 mat_sufficient=mat_sufficient,
+                wp_fixed=wp_fixed,
+                wp_pin=wp_pin,
+                wp_total=wp_total,
             )
         st.session_state.scenarios.append(sc)
         st.success(f"'{sc_name}' saved!")
 
 if st.session_state.scenarios:
-    # Build display dataframe
     rows = []
     for s in st.session_state.scenarios:
-        if s["mat_sufficient"]:
-            verdict = "✅ Mat alone OK"
-        elif s["passes"] is True:
-            verdict = "✅ PASS"
-        elif s["passes"] is False:
-            verdict = "❌ FAIL"
-        else:
-            verdict = "— (no pin)"
+        if s["mat_sufficient"]:   verdict = "✅ Mat alone OK"
+        elif s["passes"] is True: verdict = "✅ PASS"
+        elif s["passes"] is False:verdict = "❌ FAIL"
+        else:                     verdict = "— (no pin)"
         rows.append({
-            "Name":       s["name"],
-            "Mode":       s["mode"],
-            "RM₁ (MPa)":  s["RM1"],
-            "t₁ (mm)":    s["t1"],
-            "RM₂ (MPa)":  s["RM2"],
-            "t₂ (mm)":    s["t2"],
-            "S_fixed ×10³": f"{s['S_fixed']/1000:.3f}",
-            "Remaining ×10³": ("—" if s["mat_sufficient"]
-                                else f"{s['Remaining']/1000:.3f}"),
-            "t_min (mm)": f"{s['t_min']:.3f}" if s["t_min"] is not None else "—",
-            "Verdict":    verdict,
+            "Name":             s["name"],
+            "Mode":             s["mode"],
+            "RM₁ (MPa)":        s["RM1"],
+            "t₁ (mm)":          s["t1"],
+            "RM₂ (MPa)":        s["RM2"],
+            "t₂ (mm)":          s["t2"],
+            "S_fixed ×10³":     f"{s['S_fixed']/1000:.3f}",
+            "Remaining ×10³":   ("—" if s["mat_sufficient"] else f"{s['Remaining']/1000:.3f}"),
+            "t_min (mm)":       f"{s['t_min']:.3f}" if s["t_min"] is not None else "—",
+            "ΔW Fixed (kg/m)":  fmt_weight_plain(s["wp_fixed"]),
+            "ΔW Explore (kg/m)":fmt_weight_plain(s["wp_pin"]) if s["wp_pin"] is not None else "—",
+            "ΔW Total (kg/m)":  fmt_weight_plain(s["wp_total"]) if s["wp_total"] is not None else "—",
+            "Verdict":          verdict,
         })
     df_sc = pd.DataFrame(rows)
 
-    # Colour verdict column — use .map() (pandas ≥2.1) with .applymap() fallback
-    def colour_verdict(val):
-        if "PASS" in str(val) or "OK" in str(val):
-            return "background-color:#e6f9ee; color:#1a7a3c; font-weight:700"
-        if "FAIL" in str(val):
-            return "background-color:#fdecea; color:#c0392b; font-weight:700"
+    def colour_row(val, col):
+        if col == "Verdict":
+            if "PASS" in str(val) or "OK" in str(val):
+                return "background-color:#e6f9ee; color:#1a7a3c; font-weight:700"
+            if "FAIL" in str(val):
+                return "background-color:#fdecea; color:#c0392b; font-weight:700"
+        if col in ("ΔW Fixed (kg/m)", "ΔW Explore (kg/m)", "ΔW Total (kg/m)"):
+            try:
+                v = float(str(val).replace("+",""))
+                if v > 0: return "color:#c0392b; font-weight:600"
+                if v < 0: return "color:#1a7a3c; font-weight:600"
+            except Exception: pass
         return ""
 
-    try:
-        styled = df_sc.style.map(colour_verdict, subset=["Verdict"])
-    except AttributeError:
-        styled = df_sc.style.applymap(colour_verdict, subset=["Verdict"])
-    st.dataframe(styled, use_container_width=True, hide_index=True)
+    def style_df(df):
+        styled = df.style
+        for col in df.columns:
+            try:
+                styled = styled.map(lambda v, c=col: colour_row(v, c), subset=[col])
+            except AttributeError:
+                styled = styled.applymap(lambda v, c=col: colour_row(v, c), subset=[col])
+        return styled
+
+    st.dataframe(style_df(df_sc), use_container_width=True, hide_index=True)
 
     col_dl, col_clr = st.columns([1,1])
     with col_clr:
         if st.button("🗑 Clear all scenarios"):
             st.session_state.scenarios = []
             st.rerun()
-
-    # ── Download as CSV ──────────────────────────────────────────────────────
     with col_dl:
         csv_bytes = df_sc.to_csv(index=False).encode()
-        st.download_button(
-            label="⬇️ Download table (CSV)",
-            data=csv_bytes,
-            file_name="biw_scenarios.csv",
-            mime="text/csv",
-        )
+        st.download_button("⬇️ Download table (CSV)", csv_bytes,
+                           "biw_scenarios.csv", "text/csv")
 else:
     st.info("No scenarios saved yet. Adjust sliders above and click **Save scenario**.")
 
 # ===========================================================================
-# FEATURE 1 — Export Report (PDF)
+# FEATURE 1 — Export Report (PDF via matplotlib, no kaleido)
 # ===========================================================================
-st.markdown("---")
-st.markdown("### 📄 Export Report")
 
 def render_chart_matplotlib(chart_data):
-    """
-    Draws a chart using pure matplotlib — no Chrome, no kaleido needed.
-    chart_data keys:
-        title, xlabel, ylabel,
-        boundary      : array of (t_arr, rm_arr) or None
-        pass_fill     : bool — shade green/red zones
-        selected_dot  : (x, y, label) or None
-        pin_marker    : (x, y, label) or None
-        scatter_pass  : list of (x, y) or None
-        scatter_fail  : list of (x, y) or None
-        sufficient_msg: str or None
-    Returns PNG bytes.
-    """
+    """Draw chart using matplotlib Agg — no Chrome or kaleido needed."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
 
-    GRADES      = [590, 780, 980, 1180]
-    Y_MIN, Y_MAX = 350, 1450
-    T_MIN, T_MAX = 0.75, 2.55
+    GRADES_MPL  = [590, 780, 980, 1180]
     NAV   = "#1b3a6b"
     ORANGE= "#e05c1a"
+    Y_MIN_M, Y_MAX_M = 350, 1450
+    T_MIN, T_MAX = 0.75, 2.55
 
     fig_mpl, ax = plt.subplots(figsize=(7, 4.8), dpi=150)
     ax.set_facecolor("#f8fafd")
     fig_mpl.patch.set_facecolor("white")
 
-    # Grade reference lines
-    for g in GRADES:
+    for g in GRADES_MPL:
         ax.axhline(g, color="#8096c8", lw=0.9, ls="--", alpha=0.7)
-        ax.text(T_MAX + 0.01, g, f"{g} MPa", va="center", ha="left",
+        ax.text(T_MAX + 0.02, g, f"{g} MPa", va="center", ha="left",
                 fontsize=7, color="#5a6a9a")
 
     if chart_data.get("sufficient_msg"):
-        ax.text(1.65, 900, chart_data["sufficient_msg"],
-                ha="center", va="center", fontsize=12, color="#1a7a3c",
+        ax.text(1.65, 900, chart_data["sufficient_msg"], ha="center", va="center",
+                fontsize=12, color="#1a7a3c",
                 bbox=dict(boxstyle="round,pad=0.5", fc="#dcffe4", ec="#5abf7e", lw=1.2))
     else:
         bnd = chart_data.get("boundary")
         if bnd is not None:
             t_arr, rm_arr = bnd
             if chart_data.get("pass_fill"):
-                ax.fill_between(t_arr, rm_arr, Y_MAX,
-                                color="#22a846", alpha=0.10, zorder=1)
-                ax.fill_between(t_arr, Y_MIN, rm_arr,
-                                color="#c83228", alpha=0.08, zorder=1)
+                ax.fill_between(t_arr, rm_arr, Y_MAX_M, color="#22a846", alpha=0.10, zorder=1)
+                ax.fill_between(t_arr, Y_MIN_M, rm_arr, color="#c83228", alpha=0.08, zorder=1)
             ax.plot(t_arr, rm_arr, color=ORANGE, lw=2.2, zorder=3, label="Min boundary")
 
-        # Scatter overlay
         sp = chart_data.get("scatter_pass")
         sf = chart_data.get("scatter_fail")
         if sp:
             xs, ys = zip(*sp)
-            ax.scatter(xs, ys, c="rgba(22,160,80,0.75)" if False else "#16a050",
-                       s=28, alpha=0.75, zorder=4, label="PASS combo",
-                       edgecolors="#16a050", linewidths=0.5)
+            ax.scatter(xs, ys, c="#16a050", s=28, alpha=0.75, zorder=4,
+                       label="PASS combo", edgecolors="#16a050", linewidths=0.5)
         if sf:
             xs, ys = zip(*sf)
-            ax.scatter(xs, ys, c="#d23228",
-                       s=28, alpha=0.65, zorder=4, label="FAIL combo",
-                       edgecolors="#d23228", linewidths=0.5)
+            ax.scatter(xs, ys, c="#d23228", s=28, alpha=0.65, zorder=4,
+                       label="FAIL combo", edgecolors="#d23228", linewidths=0.5)
 
-        # Selected dot
         dot = chart_data.get("selected_dot")
         if dot:
-            x, y, lbl = dot
+            x, y, lbl, wp_val = dot
+            sign = f" (ΔW {wp_val:+.3f} kg/m)" if wp_val is not None else ""
             ax.scatter([x], [y], c="#0d8c4e", s=120, zorder=6,
-                       edgecolors=NAV, linewidths=1.8, label=lbl)
+                       edgecolors=NAV, linewidths=1.8, label=lbl + sign)
 
-        # Pin marker
         pin = chart_data.get("pin_marker")
         if pin:
-            x, y, lbl = pin
-            ok  = 0.8 <= x <= 2.5
-            mc  = "#0d8c4e" if ok else "#c0392b"
+            x, y, lbl, wp_val = pin
+            ok = 0.8 <= x <= 2.5
+            mc = "#0d8c4e" if ok else "#c0392b"
+            sign = f" (ΔW {wp_val:+.3f} kg/m)" if wp_val is not None else ""
             ax.scatter([x], [y], c=mc, s=120, marker="D", zorder=6,
-                       edgecolors=NAV, linewidths=1.8, label=lbl)
+                       edgecolors=NAV, linewidths=1.8, label=lbl + sign)
             ax.annotate(f"t_min={x:.2f}mm", (x, y),
-                        xytext=(8, 4), textcoords="offset points",
-                        fontsize=7, color=mc)
+                        xytext=(8, 4), textcoords="offset points", fontsize=7, color=mc)
 
-    ax.set_xlim(T_MIN, T_MAX + 0.15)
-    ax.set_ylim(Y_MIN, Y_MAX)
+    ax.set_xlim(T_MIN, T_MAX + 0.18)
+    ax.set_ylim(Y_MIN_M, Y_MAX_M)
     ax.set_xlabel(chart_data["xlabel"], fontsize=9, color="#3a4a6a")
     ax.set_ylabel(chart_data["ylabel"], fontsize=9, color="#3a4a6a")
     ax.set_title(chart_data["title"], fontsize=10, color=NAV, fontweight="bold", pad=8)
@@ -665,16 +767,12 @@ def render_chart_matplotlib(chart_data):
     fig_mpl.tight_layout()
     buf_img = io.BytesIO()
     fig_mpl.savefig(buf_img, format="png", dpi=150, bbox_inches="tight")
-    plt.close(fig_mpl)
+    import matplotlib.pyplot as _plt; _plt.close(fig_mpl)
     buf_img.seek(0)
     return buf_img.read()
 
 
 def build_pdf(chart1_data, chart2_data, scenarios, meta):
-    """
-    Generate a PDF report using matplotlib charts (no kaleido/Chrome needed).
-    Returns bytes.
-    """
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4,
                             leftMargin=18*mm, rightMargin=18*mm,
@@ -683,28 +781,24 @@ def build_pdf(chart1_data, chart2_data, scenarios, meta):
     story  = []
 
     title_style = ParagraphStyle("title", parent=styles["Heading1"],
-                                  fontSize=16, textColor=colors.HexColor("#1b3a6b"),
-                                  spaceAfter=4)
+                                  fontSize=16, textColor=colors.HexColor("#1b3a6b"), spaceAfter=4)
     sub_style   = ParagraphStyle("sub", parent=styles["Normal"],
-                                  fontSize=9, textColor=colors.HexColor("#5a6a8a"),
-                                  spaceAfter=10)
+                                  fontSize=9, textColor=colors.HexColor("#5a6a8a"), spaceAfter=10)
     body_style  = ParagraphStyle("body", parent=styles["Normal"],
-                                  fontSize=9, leading=13,
-                                  textColor=colors.HexColor("#1a1f2e"))
+                                  fontSize=9, leading=13, textColor=colors.HexColor("#1a1f2e"))
     hdr_style   = ParagraphStyle("hdr", parent=styles["Heading2"],
                                   fontSize=11, textColor=colors.HexColor("#1b3a6b"),
                                   spaceBefore=10, spaceAfter=4)
 
     story.append(Paragraph("BIW Crash Material Selector - Report", title_style))
     story.append(Paragraph(
-        f"v1 = {meta['v1']} km/h  ->  v2 = {meta['v2']} km/h  |  "
-        f"R = {meta['R']:.3f}  |  CCI target = {meta['CCI_target']/1000:.3f} x10^3  |  "
-        f"Energy target = {meta['EA_target']:.2f} kJ",
+        f"v1={meta['v1']} km/h -> v2={meta['v2']} km/h  |  "
+        f"R={meta['R']:.3f}  |  CCI target={meta['CCI_target']/1000:.3f}x10^3  |  "
+        f"EA target={meta['EA_target']:.2f} kJ",
         sub_style))
     story.append(HRFlowable(width="100%", thickness=1,
                              color=colors.HexColor("#d0daea"), spaceAfter=8))
 
-    # ── Parameters table ────────────────────────────────────────────────────
     story.append(Paragraph("Run Parameters", hdr_style))
     param_data = [
         ["Parameter", "Value"],
@@ -715,6 +809,7 @@ def build_pdf(chart1_data, chart2_data, scenarios, meta):
         ["Energy Ratio R",       f"{meta['R']:.4f}"],
         ["Energy Baseline (kJ)", f"{meta['EA_base']:.2f}"],
         ["Energy Target (kJ)",   f"{meta['EA_target']:.2f}"],
+        ["Steel density (kg/m3)","7850"],
     ]
     ts = TableStyle([
         ("BACKGROUND",    (0,0),(-1,0), colors.HexColor("#1b3a6b")),
@@ -729,10 +824,8 @@ def build_pdf(chart1_data, chart2_data, scenarios, meta):
     story.append(Table(param_data, colWidths=[90*mm, 60*mm], style=ts))
     story.append(Spacer(1, 6*mm))
 
-    # ── Charts (drawn with matplotlib — no Chrome/kaleido) ──────────────────
     story.append(Paragraph("Charts", hdr_style))
-    chart_w = 168*mm
-    chart_h = 112*mm
+    chart_w = 168*mm; chart_h = 112*mm
     for cdata, label in [(chart1_data, "Chart 1 - Material 1"),
                          (chart2_data, "Chart 2 - Material 2")]:
         story.append(Paragraph(label, body_style))
@@ -740,49 +833,60 @@ def build_pdf(chart1_data, chart2_data, scenarios, meta):
         story.append(RLImage(io.BytesIO(img_bytes), width=chart_w, height=chart_h))
         story.append(Spacer(1, 5*mm))
 
-    # ── Scenarios table ──────────────────────────────────────────────────────
     if scenarios:
-        story.append(Paragraph("Scenario Comparison", hdr_style))
-        hdr = ["Name","Mode","RM1","t1","RM2","t2","Rem ×10³","t_min","Verdict"]
+        story.append(Paragraph("Scenario Comparison (with Weight Penalty)", hdr_style))
+        hdr = ["Name","Mode","RM1","t1","RM2","t2","Rem x10^3",
+               "t_min","DW Fix","DW Exp","DW Tot","Verdict"]
         tbl_data = [hdr]
         for s in scenarios:
-            if s["mat_sufficient"]: v = "Mat OK"
-            elif s["passes"] is True:  v = "PASS"
-            elif s["passes"] is False: v = "FAIL"
-            else: v = "—"
+            if s["mat_sufficient"]:   v = "Mat OK"
+            elif s["passes"] is True: v = "PASS"
+            elif s["passes"] is False:v = "FAIL"
+            else:                     v = "—"
             tbl_data.append([
                 s["name"], s["mode"],
                 str(s["RM1"]), str(s["t1"]),
                 str(s["RM2"]), str(s["t2"]),
                 ("—" if s["mat_sufficient"] else f"{s['Remaining']/1000:.3f}"),
                 f"{s['t_min']:.3f}" if s["t_min"] else "—",
+                fmt_weight_plain(s["wp_fixed"]),
+                fmt_weight_plain(s["wp_pin"])   if s["wp_pin"]   is not None else "—",
+                fmt_weight_plain(s["wp_total"]) if s["wp_total"] is not None else "—",
                 v,
             ])
-        col_w = [28,18,16,14,16,14,20,18,18]
-        col_w_mm = [w*mm for w in col_w]
+        col_w_mm = [w*mm for w in [24,15,14,12,14,12,18,16,18,18,18,15]]
         sc_ts = TableStyle([
-            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#1b3a6b")),
-            ("TEXTCOLOR",  (0,0), (-1,0), colors.white),
-            ("FONTSIZE",   (0,0), (-1,-1), 7),
-            ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
+            ("BACKGROUND", (0,0),(-1,0), colors.HexColor("#1b3a6b")),
+            ("TEXTCOLOR",  (0,0),(-1,0), colors.white),
+            ("FONTSIZE",   (0,0),(-1,-1), 7),
+            ("FONTNAME",   (0,0),(-1,0), "Helvetica-Bold"),
             ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.HexColor("#f4f6f9"), colors.white]),
             ("GRID",(0,0),(-1,-1),0.3, colors.HexColor("#d0daea")),
             ("TOPPADDING",  (0,0),(-1,-1), 2),
             ("BOTTOMPADDING",(0,0),(-1,-1), 2),
         ])
-        # Colour verdict cells
         for i, s in enumerate(scenarios, start=1):
             if s["passes"] is True or s["mat_sufficient"]:
-                sc_ts.add("BACKGROUND", (8,i),(8,i), colors.HexColor("#d4edda"))
-                sc_ts.add("TEXTCOLOR",  (8,i),(8,i), colors.HexColor("#1a7a3c"))
+                sc_ts.add("BACKGROUND",(11,i),(11,i), colors.HexColor("#d4edda"))
+                sc_ts.add("TEXTCOLOR", (11,i),(11,i), colors.HexColor("#1a7a3c"))
             elif s["passes"] is False:
-                sc_ts.add("BACKGROUND", (8,i),(8,i), colors.HexColor("#fdecea"))
-                sc_ts.add("TEXTCOLOR",  (8,i),(8,i), colors.HexColor("#c0392b"))
+                sc_ts.add("BACKGROUND",(11,i),(11,i), colors.HexColor("#fdecea"))
+                sc_ts.add("TEXTCOLOR", (11,i),(11,i), colors.HexColor("#c0392b"))
+            # Colour weight cells
+            for col_idx, wp_key in [(8,"wp_fixed"),(9,"wp_pin"),(10,"wp_total")]:
+                wp = s.get(wp_key)
+                if wp is not None:
+                    c = colors.HexColor("#fdecea") if wp > 0 else (colors.HexColor("#d4edda") if wp < 0 else colors.white)
+                    sc_ts.add("BACKGROUND",(col_idx,i),(col_idx,i), c)
         story.append(Table(tbl_data, colWidths=col_w_mm, style=sc_ts))
 
     doc.build(story)
     buf.seek(0)
     return buf.read()
+
+
+st.markdown("---")
+st.markdown("### 📄 Export Report")
 
 with st.expander("📄 Generate & Download PDF Report", expanded=False):
     if st.button("📥 Build PDF now"):
@@ -791,25 +895,22 @@ with st.expander("📄 Generate & Download PDF Report", expanded=False):
                         CCI_baseline=CCI_baseline, CCI_target=CCI_target,
                         EA_base=EA_base, EA_target=EA_target)
 
-            # Build chart data dicts (matplotlib renderer, no kaleido)
-            # --- scatter combos for PDF ---
-            def scatter_combos(remaining, L_side):
+            def scatter_combos_pdf(remaining, L_side, t_base_mm):
                 sp, sf = [], []
                 for rm, t in itertools.product(STD_GRADES, STD_THICKNESSES):
                     (sp if rm*L_side*t >= remaining else sf).append((t, rm))
                 return sp, sf
 
             if fixing_mat1:
-                # Chart 1: selected dot, no boundary
                 c1 = dict(
-                    title="Chart 1 - Material 1 (Fixed Selection)",
+                    title="Chart 1 - Material 1 (Fixed)",
                     xlabel="Thickness t1 (mm)", ylabel="Grade RM1 (MPa)",
                     boundary=None, pass_fill=False,
-                    selected_dot=(t1_sel, RM1_sel, f"RM1={RM1_sel}MPa, t1={t1_sel:.2f}mm"),
+                    selected_dot=(t1_sel, RM1_sel,
+                                  f"RM1={RM1_sel}MPa t1={t1_sel:.2f}mm", wp_fixed),
                     pin_marker=None, scatter_pass=None, scatter_fail=None,
                     sufficient_msg=None,
                 )
-                # Chart 2: boundary + optional scatter/pin
                 if mat_sufficient:
                     c2 = dict(title="Chart 2 - Material 2 Feasible Region",
                               xlabel="Thickness t2 (mm)", ylabel="Grade RM2 (MPa)",
@@ -819,8 +920,9 @@ with st.expander("📄 Generate & Download PDF Report", expanded=False):
                 else:
                     bnd_t = T_RANGE
                     bnd_y = np.clip(Remaining/(L2*bnd_t), 350, 1450)
-                    sp, sf = (scatter_combos(Remaining, L2) if show_scatter else (None, None))
-                    pin = ((t_pin_min, RM2_pin, f"t2_min @ RM2={RM2_pin}MPa")
+                    sp, sf = scatter_combos_pdf(Remaining, L2, t2_base) if show_scatter else (None, None)
+                    pin = ((t_pin_min, RM2_pin,
+                            f"t2_min @ RM2={RM2_pin}MPa", wp_pin)
                            if (fix_other and t_pin_min and t_pin_min > 0) else None)
                     c2 = dict(title="Chart 2 - Material 2 Feasible Region",
                               xlabel="Thickness t2 (mm)", ylabel="Grade RM2 (MPa)",
@@ -828,16 +930,15 @@ with st.expander("📄 Generate & Download PDF Report", expanded=False):
                               selected_dot=None, pin_marker=pin,
                               scatter_pass=sp, scatter_fail=sf, sufficient_msg=None)
             else:
-                # Chart 2: selected dot, no boundary
                 c2 = dict(
-                    title="Chart 2 - Material 2 (Fixed Selection)",
+                    title="Chart 2 - Material 2 (Fixed)",
                     xlabel="Thickness t2 (mm)", ylabel="Grade RM2 (MPa)",
                     boundary=None, pass_fill=False,
-                    selected_dot=(t2_sel, RM2_sel, f"RM2={RM2_sel}MPa, t2={t2_sel:.2f}mm"),
+                    selected_dot=(t2_sel, RM2_sel,
+                                  f"RM2={RM2_sel}MPa t2={t2_sel:.2f}mm", wp_fixed),
                     pin_marker=None, scatter_pass=None, scatter_fail=None,
                     sufficient_msg=None,
                 )
-                # Chart 1: boundary + optional scatter/pin
                 if mat_sufficient:
                     c1 = dict(title="Chart 1 - Material 1 Feasible Region",
                               xlabel="Thickness t1 (mm)", ylabel="Grade RM1 (MPa)",
@@ -847,8 +948,9 @@ with st.expander("📄 Generate & Download PDF Report", expanded=False):
                 else:
                     bnd_t = T_RANGE
                     bnd_y = np.clip(Remaining/(L1*bnd_t), 350, 1450)
-                    sp, sf = (scatter_combos(Remaining, L1) if show_scatter else (None, None))
-                    pin = ((t_pin_min, RM1_pin, f"t1_min @ RM1={RM1_pin}MPa")
+                    sp, sf = scatter_combos_pdf(Remaining, L1, t1_base) if show_scatter else (None, None)
+                    pin = ((t_pin_min, RM1_pin,
+                            f"t1_min @ RM1={RM1_pin}MPa", wp_pin)
                            if (fix_other and t_pin_min and t_pin_min > 0) else None)
                     c1 = dict(title="Chart 1 - Material 1 Feasible Region",
                               xlabel="Thickness t1 (mm)", ylabel="Grade RM1 (MPa)",
