@@ -328,7 +328,7 @@ def add_selected_dot(fig, x_val, y_val, label, wp_kg=None):
     hover = label
     if wp_kg is not None:
         sign = "+" if wp_kg > 0 else ""
-        hover += f"<br>ΔWeight = {sign}{wp_kg:.3f} kg/m"
+        hover += f"<br>Mass Penalty = {sign}{wp_kg:.3f} kg/m"
     fig.add_trace(go.Scatter(
         x=[x_val], y=[y_val], mode="markers",
         marker=dict(color="#0d8c4e", size=14, symbol="circle",
@@ -346,8 +346,9 @@ def add_boundary_curve_with_weight(fig, t_range, bnd_cl, L_explore, t_base_mm, a
     lbl = "t₁" if axis == "t1" else "t₂"
     ax  = "RM₁" if axis == "t1" else "RM₂"
     # Pre-compute weight penalty array for every point on the curve
-    wp_arr = np.array([weight_penalty(L_explore, float(t), t_base_mm) for t in t_range])
-    sign_arr = np.where(wp_arr >= 0, "+", "")
+    wp_arr = np.round(
+        np.array([weight_penalty(L_explore, float(t), t_base_mm) for t in t_range]), 3
+    )
     custom = np.stack([wp_arr, bnd_cl], axis=-1)   # shape (N, 2)
     fig.add_trace(go.Scatter(
         x=t_range, y=bnd_cl, mode="lines",
@@ -357,7 +358,7 @@ def add_boundary_curve_with_weight(fig, t_range, bnd_cl, L_explore, t_base_mm, a
         hovertemplate=(
             f"{lbl}: %{{x:.2f}} mm<br>"
             f"Min {ax}: %{{customdata[1]:.0f}} MPa<br>"
-            f"ΔWeight: %{{customdata[0]:+.3f}} kg/m"
+            f"Mass Penalty: %{{customdata[0]:+.3f}} kg/m"
             "<extra></extra>"
         ),
     ))
@@ -368,7 +369,7 @@ def add_pin_marker(fig, t_val, rm_val, label, wp_kg=None):
     hover = f"t_min={t_val:.3f}mm"
     if wp_kg is not None:
         sign = "+" if wp_kg > 0 else ""
-        hover += f"<br>ΔWeight = {sign}{wp_kg:.3f} kg/m"
+        hover += f"<br>Mass Penalty = {sign}{wp_kg:.3f} kg/m"
     fig.add_trace(go.Scatter(
         x=[t_val], y=[rm_val], mode="markers+text",
         marker=dict(color=mc, size=14, symbol="diamond",
@@ -400,7 +401,7 @@ def add_scatter_overlay(fig, remaining, L_explore, t_base_mm, axis="t2"):
     def hover_tmpl(status):
         return (
             f"{ax}=%{{y}} MPa  {lbl}=%{{x:.2f}} mm<br>"
-            f"ΔWeight=%{{customdata:+.3f}} kg/m"
+            f"Mass Penalty=%{{customdata:+.3f}} kg/m"
             f"<extra>{status}</extra>"
         )
 
@@ -409,7 +410,7 @@ def add_scatter_overlay(fig, remaining, L_explore, t_base_mm, axis="t2"):
             x=pass_x, y=pass_y, mode="markers",
             marker=dict(color="rgba(22,160,80,0.75)", size=9, symbol="circle",
                         line=dict(color="rgba(22,160,80,1)", width=1)),
-            customdata=pass_wp,
+            customdata=[round(v, 3) for v in pass_wp],
             name="PASS combo",
             hovertemplate=hover_tmpl("PASS"),
         ))
@@ -418,7 +419,7 @@ def add_scatter_overlay(fig, remaining, L_explore, t_base_mm, axis="t2"):
             x=fail_x, y=fail_y, mode="markers",
             marker=dict(color="rgba(210,50,40,0.65)", size=9, symbol="circle",
                         line=dict(color="rgba(210,50,40,1)", width=1)),
-            customdata=fail_wp,
+            customdata=[round(v, 3) for v in fail_wp],
             name="FAIL combo",
             hovertemplate=hover_tmpl("FAIL"),
         ))
@@ -529,13 +530,43 @@ else:
     t_min_display     = "—"
     remaining_display = "—" if mat_sufficient else f"{Remaining/1000:.3f} ×10³"
 
-# Weight penalty display strings
+# Weight penalty display strings — pre-built outside the f-string to avoid escaping
 fixed_side_lbl   = "Mat 1" if fixing_mat1 else "Mat 2"
 explore_side_lbl = "Mat 2" if fixing_mat1 else "Mat 1"
 
-wp_fixed_html = fmt_weight(wp_fixed)
-wp_pin_html   = fmt_weight(wp_pin)   if wp_pin   is not None else "<span class='weight-neu'>—</span>"
-wp_total_html = fmt_weight(wp_total) if wp_total is not None else "<span class='weight-neu'>—</span>"
+def _wp_html(w):
+    if w is None:
+        return '<span style="color:#5a6a8a;">—</span>'
+    sign = "+" if w > 0 else ""
+    color = "#c0392b" if w > 0 else ("#1a7a3c" if w < 0 else "#5a6a8a")
+    return f'<span style="color:{color}; font-weight:700;">{sign}{w:.3f} kg/m</span>'
+
+wp_fixed_html = _wp_html(wp_fixed)
+wp_pin_html   = _wp_html(wp_pin)
+wp_total_html = _wp_html(wp_total)
+
+_mass_section = f"""
+    <div style="border-top:1px solid #e8ecf4; margin-top:14px; padding-top:12px;">
+        <div style="font-size:.70rem; color:#6b7a99; letter-spacing:.04em; text-transform:uppercase; margin-bottom:8px;">
+            ⚖️ MASS PENALTY vs BASELINE
+            <span style="font-size:.68rem; color:#8896b0; text-transform:none;">&nbsp;(kg per metre of rail)</span>
+        </div>
+        <div style="display:flex; gap:32px; flex-wrap:wrap;">
+            <div>
+                <div style="font-size:.70rem; color:#6b7a99; text-transform:uppercase; margin-bottom:2px;">{fixed_side_lbl} Mass Penalty</div>
+                <div style="font-size:1.1rem; font-weight:600;">{wp_fixed_html}</div>
+            </div>
+            <div>
+                <div style="font-size:.70rem; color:#6b7a99; text-transform:uppercase; margin-bottom:2px;">{explore_side_lbl} Mass Penalty (pinned t_min)</div>
+                <div style="font-size:1.1rem; font-weight:600;">{wp_pin_html}</div>
+            </div>
+            <div>
+                <div style="font-size:.70rem; color:#6b7a99; text-transform:uppercase; margin-bottom:2px;">Total Mass Penalty (both sides)</div>
+                <div style="font-size:1.1rem; font-weight:600;">{wp_total_html}</div>
+            </div>
+        </div>
+    </div>
+"""
 
 st.markdown(f"""
 <div class="result-card">
@@ -556,26 +587,7 @@ st.markdown(f"""
             <div class="rlabel" style="margin-top:5px;">{status_note}</div>
         </div>
     </div>
-
-    <div style="border-top:1px solid #e8ecf4; margin-top:14px; padding-top:12px;">
-        <div class="rlabel" style="margin-bottom:8px;">⚖️ WEIGHT PENALTY vs BASELINE &nbsp;
-            <span style="font-size:.68rem; color:#8896b0;">(kg per metre of rail)</span>
-        </div>
-        <div class="result-row">
-            <div class="result-item">
-                <div class="rlabel">{fixed_side_lbl} ΔWeight</div>
-                <div class="rvalue">{wp_fixed_html}</div>
-            </div>
-            <div class="result-item">
-                <div class="rlabel">{explore_side_lbl} ΔWeight (pinned t_min)</div>
-                <div class="rvalue">{wp_pin_html}</div>
-            </div>
-            <div class="result-item">
-                <div class="rlabel">Total ΔWeight (both sides)</div>
-                <div class="rvalue">{wp_total_html}</div>
-            </div>
-        </div>
-    </div>
+    {_mass_section}
 </div>
 """, unsafe_allow_html=True)
 
@@ -638,9 +650,9 @@ if st.session_state.scenarios:
             "S_fixed ×10³":     f"{s['S_fixed']/1000:.3f}",
             "Remaining ×10³":   ("—" if s["mat_sufficient"] else f"{s['Remaining']/1000:.3f}"),
             "t_min (mm)":       f"{s['t_min']:.3f}" if s["t_min"] is not None else "—",
-            "ΔW Fixed (kg/m)":  fmt_weight_plain(s["wp_fixed"]),
-            "ΔW Explore (kg/m)":fmt_weight_plain(s["wp_pin"]) if s["wp_pin"] is not None else "—",
-            "ΔW Total (kg/m)":  fmt_weight_plain(s["wp_total"]) if s["wp_total"] is not None else "—",
+            "MP Fixed (kg/m)":   fmt_weight_plain(s["wp_fixed"]),
+            "MP Explore (kg/m)": fmt_weight_plain(s["wp_pin"]) if s["wp_pin"] is not None else "—",
+            "MP Total (kg/m)":   fmt_weight_plain(s["wp_total"]) if s["wp_total"] is not None else "—",
             "Verdict":          verdict,
         })
     df_sc = pd.DataFrame(rows)
@@ -651,7 +663,7 @@ if st.session_state.scenarios:
                 return "background-color:#e6f9ee; color:#1a7a3c; font-weight:700"
             if "FAIL" in str(val):
                 return "background-color:#fdecea; color:#c0392b; font-weight:700"
-        if col in ("ΔW Fixed (kg/m)", "ΔW Explore (kg/m)", "ΔW Total (kg/m)"):
+        if col in ("MP Fixed (kg/m)", "MP Explore (kg/m)", "MP Total (kg/m)"):
             try:
                 v = float(str(val).replace("+",""))
                 if v > 0: return "color:#c0392b; font-weight:600"
@@ -836,7 +848,7 @@ def build_pdf(chart1_data, chart2_data, scenarios, meta):
     if scenarios:
         story.append(Paragraph("Scenario Comparison (with Weight Penalty)", hdr_style))
         hdr = ["Name","Mode","RM1","t1","RM2","t2","Rem x10^3",
-               "t_min","DW Fix","DW Exp","DW Tot","Verdict"]
+               "t_min","MP Fix","MP Exp","MP Tot","Verdict"]
         tbl_data = [hdr]
         for s in scenarios:
             if s["mat_sufficient"]:   v = "Mat OK"
