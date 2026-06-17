@@ -750,7 +750,7 @@ def build_pdf(chart1_data, chart2_data, scenarios, meta):
     # ── Scenarios table ──────────────────────────────────────────────────────
     if scenarios:
         story.append(Paragraph("Scenario Comparison", hdr_style))
-        hdr = ["Name","Mode","RM₁","t₁","RM₂","t₂","Rem ×10³","t_min","Verdict"]
+        hdr = ["Name","Mode","RM1","t1","RM2","t2","Rem ×10³","t_min","Verdict"]
         tbl_data = [hdr]
         for s in scenarios:
             if s["mat_sufficient"]: v = "Mat OK"
