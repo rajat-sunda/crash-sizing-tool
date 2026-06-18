@@ -1,13 +1,6 @@
 """
 BIW Crash Material Selection Tool  —  v5
 ==========================================
-Features:
-  1. Export Report  — PDF (matplotlib, no kaleido/Chrome)
-  2. Scatter Overlay — only datasheet grade/thickness combos, coloured by pass/fail
-  3. Multi-Scenario Comparison — save & compare named scenarios
-  4. Mass Penalty  — kg/m vs baseline, shown on hover, results, and scenarios
-  5. Cost Penalty  — Rs/m vs baseline, shown on hover, results, and scenarios
-
 Formula:
     Mass Penalty (kg/m) = (L_mm/1000) × (t_new_mm - t_base_mm)/1000 × 7850
     Cost Penalty (Rs/m) = (L_mm/1000) × t_new_mm/1000 × rate_new  (Rs/m³)
@@ -127,7 +120,7 @@ footer{visibility:hidden;} #MainMenu{visibility:hidden;}
 st.markdown("""
 <div class="app-header">
     <h1>⚡ BIW Crash Material Selector</h1>
-    <p>Concept-stage BIW crash sizing tool &nbsp;·&nbsp; CCI = RM₁·L₁·t₁ + RM₂·L₂·t₂</p>
+    <p>Concept-stage BIW crash sizing tool &nbsp;·&nbsp; CCI (Crash Capacity Indicator) = RM₁·L₁·t₁ + RM₂·L₂·t₂</p>
 </div>
 """, unsafe_allow_html=True)
 
