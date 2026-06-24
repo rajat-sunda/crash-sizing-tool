@@ -341,6 +341,13 @@ def add_selected_dot(fig,x,y,label,mp_kg=None,cp_rs=None):
                     line=dict(color="#1b3a6b",width=2.5)),
         name=label,hovertemplate=hover+"<extra></extra>"))
 
+def add_baseline_dot(fig,x,y,label):
+    """Gray square marker showing the original baseline (RM, t) design point."""
+    fig.add_trace(go.Scatter(x=[x],y=[y],mode="markers",
+        marker=dict(color="#8896b0",size=12,symbol="square",
+                    line=dict(color="#4a5568",width=2)),
+        name=label,hovertemplate=label+"<extra></extra>"))
+
 def add_boundary_curve(fig,t_range,bnd_cl,L_ex,t_base_mm,rate_ex,rate_base_ex,axis="t2"):
     lbl="t₁" if axis=="t1" else "t₂"
     ax ="RM₁" if axis=="t1" else "RM₂"
@@ -406,6 +413,7 @@ def add_scatter_overlay(fig,remaining,L_ex,t_base_mm,rate_ex,rate_base_ex,axis="
 # Build Chart 1
 # ---------------------------------------------------------------------------
 fig1=go.Figure(); add_grade_lines(fig1)
+add_baseline_dot(fig1,t1_base,RM1_base,f"Baseline: RM₁={RM1_base:.0f}MPa, t₁={t1_base:.2f}mm")
 
 if fixing_mat1:
     add_selected_dot(fig1,t1_sel,RM1_sel,f"RM₁={RM1_sel}MPa t₁={t1_sel:.2f}mm",
@@ -438,6 +446,7 @@ fig1.update_layout(**BASE_LAYOUT,
 # Build Chart 2
 # ---------------------------------------------------------------------------
 fig2=go.Figure(); add_grade_lines(fig2)
+add_baseline_dot(fig2,t2_base,RM2_base,f"Baseline: RM₂={RM2_base:.0f}MPa, t₂={t2_base:.2f}mm")
 
 if fixing_mat1:
     chart2_title="Chart 2 — Material 2 Feasible Region"
@@ -636,6 +645,14 @@ def render_chart_mpl(cdata):
     for g in GRADES_REF:
         ax.axhline(g,color="#8096c8",lw=0.9,ls="--",alpha=0.7)
         ax.text(2.58,g,f"{g}MPa",va="center",ha="left",fontsize=7,color="#5a6a9a")
+
+    # Baseline point — always shown
+    base=cdata.get("baseline_dot")
+    if base:
+        bx,by,blbl=base
+        ax.scatter([bx],[by],c="#8896b0",s=100,marker="s",zorder=5,
+                   edgecolors="#4a5568",linewidths=1.6,label=blbl)
+
     if cdata.get("sufficient_msg"):
         ax.text(1.65,900,cdata["sufficient_msg"],ha="center",va="center",fontsize=12,color="#1a7a3c",
                 bbox=dict(boxstyle="round,pad=0.5",fc="#dcffe4",ec="#5abf7e",lw=1.2))
@@ -763,11 +780,13 @@ with st.expander("📄 Generate & Download PDF Report",expanded=False):
             if fixing_mat1:
                 c1=dict(title="Chart 1 - Material 1 (Fixed)",xlabel="t1 (mm)",ylabel="RM1 (MPa)",
                         boundary=None,pass_fill=False,sufficient_msg=None,
+                        baseline_dot=(t1_base,RM1_base,f"Baseline: RM1={RM1_base:.0f}MPa t1={t1_base:.2f}mm"),
                         selected_dot=(t1_sel,RM1_sel,f"RM1={RM1_sel}MPa",mp_fixed,cp_fixed),
                         pin_marker=None,scatter_pass=None,scatter_fail=None)
                 if mat_sufficient:
                     c2=dict(title="Chart 2 - Material 2",xlabel="t2 (mm)",ylabel="RM2 (MPa)",
                             boundary=None,pass_fill=False,sufficient_msg="Mat1 alone sufficient",
+                            baseline_dot=(t2_base,RM2_base,f"Baseline: RM2={RM2_base:.0f}MPa t2={t2_base:.2f}mm"),
                             selected_dot=None,pin_marker=None,scatter_pass=None,scatter_fail=None)
                 else:
                     bt=T_RANGE; by=np.clip(Remaining/(L2*bt),350,1450)
@@ -776,15 +795,18 @@ with st.expander("📄 Generate & Download PDF Report",expanded=False):
                         if (fix_other and t_pin_min and t_pin_min>0) else None)
                     c2=dict(title="Chart 2 - Material 2",xlabel="t2 (mm)",ylabel="RM2 (MPa)",
                             boundary=(bt,by),pass_fill=True,sufficient_msg=None,
+                            baseline_dot=(t2_base,RM2_base,f"Baseline: RM2={RM2_base:.0f}MPa t2={t2_base:.2f}mm"),
                             selected_dot=None,pin_marker=pm,scatter_pass=sp,scatter_fail=sf)
             else:
                 c2=dict(title="Chart 2 - Material 2 (Fixed)",xlabel="t2 (mm)",ylabel="RM2 (MPa)",
                         boundary=None,pass_fill=False,sufficient_msg=None,
+                        baseline_dot=(t2_base,RM2_base,f"Baseline: RM2={RM2_base:.0f}MPa t2={t2_base:.2f}mm"),
                         selected_dot=(t2_sel,RM2_sel,f"RM2={RM2_sel}MPa",mp_fixed,cp_fixed),
                         pin_marker=None,scatter_pass=None,scatter_fail=None)
                 if mat_sufficient:
                     c1=dict(title="Chart 1 - Material 1",xlabel="t1 (mm)",ylabel="RM1 (MPa)",
                             boundary=None,pass_fill=False,sufficient_msg="Mat2 alone sufficient",
+                            baseline_dot=(t1_base,RM1_base,f"Baseline: RM1={RM1_base:.0f}MPa t1={t1_base:.2f}mm"),
                             selected_dot=None,pin_marker=None,scatter_pass=None,scatter_fail=None)
                 else:
                     bt=T_RANGE; by=np.clip(Remaining/(L1*bt),350,1450)
@@ -793,6 +815,7 @@ with st.expander("📄 Generate & Download PDF Report",expanded=False):
                         if (fix_other and t_pin_min and t_pin_min>0) else None)
                     c1=dict(title="Chart 1 - Material 1",xlabel="t1 (mm)",ylabel="RM1 (MPa)",
                             boundary=(bt,by),pass_fill=True,sufficient_msg=None,
+                            baseline_dot=(t1_base,RM1_base,f"Baseline: RM1={RM1_base:.0f}MPa t1={t1_base:.2f}mm"),
                             selected_dot=None,pin_marker=pm,scatter_pass=sp,scatter_fail=sf)
             try:
                 pdf_bytes=build_pdf(c1,c2,st.session_state.scenarios,meta)
