@@ -154,6 +154,21 @@ def rate_for(grade):
     """Look up Rs/m³ rate for a grade; return 0 if not in datasheet."""
     return GRADE_RATE.get(int(grade), 0)
 
+def evaluate_curve_point(rm_val, t_val, L_ex, t_base_ex, rate_base_ex, remaining):
+    """
+    Given a clicked (RM, t) point on the explore-material boundary curve,
+    return a dict with CCI contribution, pass/fail, mass penalty, cost penalty.
+    Nearest-available datasheet rate is used for cost (falls back to 0 if
+    the exact grade isn't in MATERIAL_DATA — interpolated grades still get
+    mass penalty, just no cost penalty).
+    """
+    cci_this = rm_val * L_ex * t_val
+    passes = cci_this >= remaining
+    rate_this = rate_for(round(rm_val / 10) * 10)  # snap to nearest 10 MPa for rate lookup
+    mp = mass_penalty(L_ex, t_val, t_base_ex)
+    cp = cost_penalty(L_ex, t_val, rate_this, t_base_ex, rate_base_ex) if rate_this else None
+    return dict(rm=rm_val, t=t_val, cci=cci_this, passes=passes, mp=mp, cp=cp, rate_used=rate_this)
+
 def fmt_plain(val, unit):
     if val is None: return "—"
     sign = "+" if val > 0 else ""
@@ -354,13 +369,16 @@ def add_boundary_curve(fig,t_range,bnd_cl,L_ex,t_base_mm,rate_ex,rate_base_ex,ax
     mp_arr=np.round([mass_penalty(L_ex,float(t),t_base_mm) for t in t_range],3)
     cp_arr=np.round([cost_penalty(L_ex,float(t),rate_ex,t_base_mm,rate_base_ex) for t in t_range],2)
     custom=np.stack([mp_arr,bnd_cl,cp_arr],axis=-1)
-    fig.add_trace(go.Scatter(x=t_range,y=bnd_cl,mode="lines",
-        line=dict(color="#e05c1a",width=2.5),name=f"Min {ax} boundary",
+    fig.add_trace(go.Scatter(x=t_range,y=bnd_cl,mode="lines+markers",
+        line=dict(color="#e05c1a",width=2.5),
+        marker=dict(size=5,color="#e05c1a",opacity=0.0),  # invisible markers = clickable hit targets
+        name="boundary_curve",
         customdata=custom,
         hovertemplate=(f"{lbl}: %{{x:.2f}} mm<br>"
                        f"Min {ax}: %{{customdata[1]:.0f}} MPa<br>"
                        f"Mass Penalty: %{{customdata[0]:+.3f}} kg/m<br>"
-                       f"Cost Penalty: %{{customdata[2]:+.2f}} Rs/m"
+                       f"Cost Penalty: %{{customdata[2]:+.2f}} Rs/m<br>"
+                       "<i>Click to select this point</i>"
                        "<extra></extra>")))
 
 def add_pin_marker(fig,t_val,rm_val,label,mp_kg=None,cp_rs=None):
@@ -479,8 +497,112 @@ fig2.update_layout(**BASE_LAYOUT,
 # Render charts
 # ---------------------------------------------------------------------------
 col1,col2=st.columns(2)
-with col1: st.plotly_chart(fig1,use_container_width=True,config={"displayModeBar":False})
-with col2: st.plotly_chart(fig2,use_container_width=True,config={"displayModeBar":False})
+with col1:
+    chart1_event = st.plotly_chart(fig1,use_container_width=True,config={"displayModeBar":False},
+                                   on_select="rerun",key="chart1_click")
+with col2:
+    chart2_event = st.plotly_chart(fig2,use_container_width=True,config={"displayModeBar":False},
+                                   on_select="rerun",key="chart2_click")
+
+# ---------------------------------------------------------------------------
+# Click-to-pick: read a point clicked on the boundary curve (the explore chart)
+# ---------------------------------------------------------------------------
+def extract_click_point(event):
+    """Pull (x, y) from a plotly_chart on_select event, or None if nothing selected."""
+    if not event or not event.get("selection"): return None
+    pts = event["selection"].get("points")
+    if not pts: return None
+    p = pts[0]
+    # Only accept clicks on the boundary curve trace (curve_number distinguishes traces,
+    # but simplest robust check: must have both x and y)
+    if "x" not in p or "y" not in p: return None
+    return float(p["x"]), float(p["y"])
+
+clicked_point = None
+clicked_chart = None
+if fixing_mat1:
+    cp_xy = extract_click_point(chart2_event)
+    if cp_xy: clicked_point, clicked_chart = cp_xy, "chart2"
+else:
+    cp_xy = extract_click_point(chart1_event)
+    if cp_xy: clicked_point, clicked_chart = cp_xy, "chart1"
+
+curve_pick = None
+if clicked_point is not None and not mat_sufficient:
+    t_clicked, rm_clicked = clicked_point
+    curve_pick = evaluate_curve_point(rm_clicked, t_clicked, L_explore,
+                                       t_explore_base, rate_explore_base, Remaining)
+
+# ---------------------------------------------------------------------------
+# Curve-pick result card — shown only when a point was clicked
+# ---------------------------------------------------------------------------
+if curve_pick is not None:
+    explore_lbl_cp = "Material 2" if fixing_mat1 else "Material 1"
+    rm_sym = "RM₂" if fixing_mat1 else "RM₁"
+    t_sym  = "t₂" if fixing_mat1 else "t₁"
+    pass_badge = ('<span class="badge-pass">✅ PASS</span>' if curve_pick["passes"]
+                 else '<span class="badge-fail">❌ FAIL</span>')
+    cp_display = (f"{curve_pick['cp']:+.2f} Rs/m" if curve_pick["cp"] is not None
+                 else "— (no datasheet rate for this grade)")
+
+    st.markdown(f"""
+    <div class="result-card" style="border-color:#2a5298;">
+        <h4>📍 Point Selected on Curve — {explore_lbl_cp}</h4>
+        <div class="result-row">
+            <div class="result-item"><div class="rlabel">{rm_sym}</div>
+                <div class="rvalue">{curve_pick['rm']:.0f} MPa</div></div>
+            <div class="result-item"><div class="rlabel">{t_sym}</div>
+                <div class="rvalue">{curve_pick['t']:.3f} mm</div></div>
+            <div class="result-item"><div class="rlabel">Mass Penalty</div>
+                <div class="rvalue">{curve_pick['mp']:+.3f} kg/m</div></div>
+            <div class="result-item"><div class="rlabel">Cost Penalty</div>
+                <div class="rvalue">{cp_display}</div></div>
+            <div class="result-item" style="margin-left:auto;align-self:center;">
+                {pass_badge}
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    cpk_name_col, cpk_btn_col = st.columns([3,1])
+    with cpk_name_col:
+        cpk_name = st.text_input("Case name",
+                                 value=f"Curve pick {len(st.session_state.scenarios)+1}",
+                                 key="curve_pick_name")
+    with cpk_btn_col:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        if st.button("💾 Save as case"):
+            if fixing_mat1:
+                sc_cp = dict(
+                    name=cpk_name, mode="Curve pick (Mat2)",
+                    RM1=RM1_sel, t1=t1_sel,
+                    RM2=round(curve_pick["rm"],1), t2=f"{curve_pick['t']:.3f}",
+                    S_fixed=S_fixed, Remaining=Remaining, CCI_target=CCI_target,
+                    t_min=curve_pick["t"], passes=curve_pick["passes"],
+                    mat_sufficient=False,
+                    mp_fixed=mp_fixed, mp_pin=curve_pick["mp"],
+                    mp_total=mp_fixed+curve_pick["mp"],
+                    cp_fixed=cp_fixed, cp_pin=curve_pick["cp"],
+                    cp_total=(cp_fixed+curve_pick["cp"]) if curve_pick["cp"] is not None else None,
+                )
+            else:
+                sc_cp = dict(
+                    name=cpk_name, mode="Curve pick (Mat1)",
+                    RM1=round(curve_pick["rm"],1), t1=f"{curve_pick['t']:.3f}",
+                    RM2=RM2_sel, t2=t2_sel,
+                    S_fixed=S_fixed, Remaining=Remaining, CCI_target=CCI_target,
+                    t_min=curve_pick["t"], passes=curve_pick["passes"],
+                    mat_sufficient=False,
+                    mp_fixed=mp_fixed, mp_pin=curve_pick["mp"],
+                    mp_total=mp_fixed+curve_pick["mp"],
+                    cp_fixed=cp_fixed, cp_pin=curve_pick["cp"],
+                    cp_total=(cp_fixed+curve_pick["cp"]) if curve_pick["cp"] is not None else None,
+                )
+            st.session_state.scenarios.append(sc_cp)
+            st.success(f"'{cpk_name}' saved as a case!")
+elif not mat_sufficient:
+    st.caption("💡 Tip: click any point on the boundary curve (right-hand feasible-region chart) "
+              "to see its mass & cost penalty and save it as a case.")
 
 # ---------------------------------------------------------------------------
 # Results card
